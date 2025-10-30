@@ -95,26 +95,77 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
+        // SETUP: Replace these with your Supabase credentials
+        const SUPABASE_URL = 'https://slelvrwtokiqlhletpsf.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsZWx2cnd0b2tpcWxobGV0cHNmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3ODM3MTEsImV4cCI6MjA3NzM1OTcxMX0.mvO2vGyMlvmeV0tn60RL9dbzKkScBfXcFqMY-rTBmHM';
+        
+        let supabase = null;
+        let useLocalStorage = true;
+
+        // Try to initialize Supabase
+        if (SUPABASE_URL !== 'YOUR_SUPABASE_URL_HERE' && SUPABASE_KEY !== 'YOUR_SUPABASE_ANON_KEY_HERE') {
+            try {
+                supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+                useLocalStorage = false;
+            } catch (e) {
+                console.log('Using local storage mode');
+            }
+        }
+
         const app = {
             items: [],
             selectedCategory: 'All',
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
 
-            init() {
-                const saved = localStorage.getItem('uts-inventory');
-                if (saved) {
+            async init() {
+                await this.loadData();
+                this.render();
+                
+                // Subscribe to real-time updates if using Supabase
+                if (!useLocalStorage && supabase) {
+                    supabase
+                        .channel('inventory_changes')
+                        .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
+                            this.loadData();
+                        })
+                        .subscribe();
+                }
+            },
+
+            async loadData() {
+                if (useLocalStorage) {
+                    const saved = localStorage.getItem('uts-inventory');
+                    if (saved) {
+                        try {
+                            this.items = JSON.parse(saved);
+                        } catch (e) {
+                            console.error('Error loading data:', e);
+                        }
+                    }
+                } else {
                     try {
-                        this.items = JSON.parse(saved);
+                        const { data, error } = await supabase
+                            .from('inventory')
+                            .select('*')
+                            .order('name');
+                        
+                        if (!error && data) {
+                            this.items = data;
+                        }
                     } catch (e) {
-                        console.error('Error loading data:', e);
+                        console.error('Error loading from database:', e);
                     }
                 }
                 this.render();
             },
 
-            save() {
-                localStorage.setItem('uts-inventory', JSON.stringify(this.items));
+            async save() {
+                if (useLocalStorage) {
+                    localStorage.setItem('uts-inventory', JSON.stringify(this.items));
+                }
+                // Supabase saves happen in individual operations (addItem, updateQuantity, etc.)
             },
 
             toggleAddForm() {
@@ -122,22 +173,37 @@
                 form.classList.toggle('hidden');
             },
 
-            addItem() {
+            async addItem() {
                 const name = document.getElementById('itemName').value.trim();
                 if (!name) return alert('Please enter item name');
 
                 const item = {
-                    id: Date.now(),
                     name: name,
                     category: document.getElementById('itemCategory').value,
                     quantity: parseInt(document.getElementById('itemQuantity').value) || 0,
                     unit: document.getElementById('itemUnit').value,
-                    minStock: parseInt(document.getElementById('itemMinStock').value) || 5,
-                    expiryDate: document.getElementById('itemExpiry').value
+                    minstock: parseInt(document.getElementById('itemMinStock').value) || 5,
+                    expirydate: document.getElementById('itemExpiry').value || null
                 };
 
-                this.items.push(item);
-                this.save();
+                if (useLocalStorage) {
+                    item.id = Date.now();
+                    this.items.push(item);
+                    this.save();
+                } else {
+                    try {
+                        const { data, error } = await supabase
+                            .from('inventory')
+                            .insert([item])
+                            .select();
+                        
+                        if (error) throw error;
+                        await this.loadData();
+                    } catch (e) {
+                        alert('Error saving item: ' + e.message);
+                        return;
+                    }
+                }
                 
                 document.getElementById('itemName').value = '';
                 document.getElementById('itemQuantity').value = '0';
@@ -148,29 +214,61 @@
                 this.render();
             },
 
-            updateQuantity(id, change) {
+            async updateQuantity(id, change) {
                 const item = this.items.find(i => i.id === id);
-                if (item) {
-                    item.quantity = Math.max(0, item.quantity + change);
+                if (!item) return;
+
+                const newQty = Math.max(0, item.quantity + change);
+
+                if (useLocalStorage) {
+                    item.quantity = newQty;
                     this.save();
                     this.render();
+                } else {
+                    try {
+                        const { error } = await supabase
+                            .from('inventory')
+                            .update({ quantity: newQty })
+                            .eq('id', id);
+                        
+                        if (error) throw error;
+                        await this.loadData();
+                    } catch (e) {
+                        alert('Error updating quantity: ' + e.message);
+                    }
                 }
             },
 
-            deleteItem(id) {
-                if (confirm('Remove this item from inventory?')) {
+            async deleteItem(id) {
+                if (!confirm('Remove this item from inventory?')) return;
+
+                if (useLocalStorage) {
                     this.items = this.items.filter(i => i.id !== id);
                     this.save();
                     this.render();
+                } else {
+                    try {
+                        const { error } = await supabase
+                            .from('inventory')
+                            .delete()
+                            .eq('id', id);
+                        
+                        if (error) throw error;
+                        await this.loadData();
+                    } catch (e) {
+                        alert('Error deleting item: ' + e.message);
+                    }
                 }
             },
 
             getItemStatus(item) {
                 if (item.quantity === 0) return { color: 'bg-red-100 border-red-300', text: 'OUT OF STOCK' };
-                if (item.quantity <= item.minStock) return { color: 'bg-orange-100 border-orange-300', text: 'LOW STOCK' };
+                const minStock = item.minstock || item.minStock || 5;
+                if (item.quantity <= minStock) return { color: 'bg-orange-100 border-orange-300', text: 'LOW STOCK' };
                 
-                if (item.expiryDate) {
-                    const days = Math.ceil((new Date(item.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+                const expiryDate = item.expirydate || item.expiryDate;
+                if (expiryDate) {
+                    const days = Math.ceil((new Date(expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
                     if (days < 0) return { color: 'bg-red-100 border-red-300', text: 'EXPIRED' };
                     if (days <= 7) return { color: 'bg-yellow-100 border-yellow-300', text: `EXPIRES IN ${days}D` };
                 }
@@ -188,19 +286,37 @@
                 a.click();
             },
 
-            importData(e) {
+            async importData(e) {
                 const file = e.target.files[0];
                 if (!file) return;
                 
                 const reader = new FileReader();
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     try {
                         const imported = JSON.parse(event.target.result);
-                        if (Array.isArray(imported)) {
+                        if (!Array.isArray(imported)) {
+                            alert('Invalid file format');
+                            return;
+                        }
+
+                        if (useLocalStorage) {
                             this.items = imported;
                             this.save();
                             this.render();
                             alert('Data imported successfully!');
+                        } else {
+                            // Clear existing data and import new
+                            if (confirm('This will replace ALL current inventory. Continue?')) {
+                                try {
+                                    await supabase.from('inventory').delete().neq('id', 0);
+                                    const { error } = await supabase.from('inventory').insert(imported);
+                                    if (error) throw error;
+                                    await this.loadData();
+                                    alert('Data imported successfully!');
+                                } catch (e) {
+                                    alert('Error importing: ' + e.message);
+                                }
+                            }
                         }
                     } catch (error) {
                         alert('Error importing data. Please check the file format.');
@@ -219,11 +335,15 @@
 
                 const stats = {
                     total: this.items.length,
-                    lowStock: this.items.filter(i => i.quantity <= i.minStock && i.quantity > 0).length,
+                    lowStock: this.items.filter(i => {
+                        const minStock = i.minstock || i.minStock || 5;
+                        return i.quantity <= minStock && i.quantity > 0;
+                    }).length,
                     outOfStock: this.items.filter(i => i.quantity === 0).length,
                     expiringSoon: this.items.filter(i => {
-                        if (!i.expiryDate) return false;
-                        const days = Math.ceil((new Date(i.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+                        const expiryDate = i.expirydate || i.expiryDate;
+                        if (!expiryDate) return false;
+                        const days = Math.ceil((new Date(expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
                         return days >= 0 && days <= 7;
                     }).length
                 };
@@ -272,6 +392,7 @@
                 } else {
                     document.getElementById('itemsList').innerHTML = filtered.map(item => {
                         const status = this.getItemStatus(item);
+                        const expiryDate = item.expirydate || item.expiryDate;
                         return `
                             <div class="${status.color} border-2 rounded-lg p-4 transition hover:shadow-md">
                                 <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -284,7 +405,7 @@
                                             <span class="font-semibold">
                                                 Stock: <span class="${item.quantity === 0 ? 'text-red-600' : 'text-gray-800'}">${item.quantity} ${item.unit}</span>
                                             </span>
-                                            ${item.expiryDate ? `<span>Expires: ${new Date(item.expiryDate).toLocaleDateString()}</span>` : ''}
+                                            ${expiryDate ? `<span>Expires: ${new Date(expiryDate).toLocaleDateString()}</span>` : ''}
                                         </div>
                                         ${status.text ? `
                                             <div class="flex items-center gap-1 mt-2">
@@ -324,3 +445,4 @@
     </script>
 </body>
 </html>
+
