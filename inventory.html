@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Charity Inventory Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-50">
+    <div id="app" class="min-h-screen p-4">
+        <div class="max-w-6xl mx-auto">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex items-center justify-between mb-4 flex-wrap gap-4">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                        </svg>
+                        <h1 class="text-3xl font-bold text-gray-800">Inventory Manager</h1>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="app.exportData()" class="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition text-sm">
+                            Export
+                        </button>
+                        <label class="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition text-sm cursor-pointer">
+                            Import
+                            <input type="file" accept=".json" onchange="app.importData(event)" class="hidden" />
+                        </label>
+                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition">
+                            + Add Item
+                        </button>
+                    </div>
+                </div>
+
+                <div id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+            </div>
+
+            <div id="addForm" class="bg-white rounded-lg shadow-md p-6 mb-6 hidden">
+                <h2 class="text-xl font-bold mb-4">Add New Item</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <input type="text" id="itemName" placeholder="Item name *" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <select id="itemCategory" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <option value="Food">Food</option>
+                        <option value="Clothing">Clothing</option>
+                        <option value="Hygiene">Hygiene</option>
+                        <option value="Household">Household</option>
+                        <option value="Other">Other</option>
+                    </select>
+                    <input type="number" id="itemQuantity" placeholder="Quantity" value="0" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <select id="itemUnit" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <option value="units">units</option>
+                        <option value="kg">kg</option>
+                        <option value="liters">liters</option>
+                        <option value="boxes">boxes</option>
+                        <option value="bags">bags</option>
+                        <option value="cans">cans</option>
+                    </select>
+                    <input type="number" id="itemMinStock" placeholder="Alert when stock below" value="5" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <input type="date" id="itemExpiry" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <button onclick="app.addItem()" class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition">
+                    Add Item
+                </button>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex flex-col md:flex-row gap-4">
+                    <div class="flex-1 relative">
+                        <svg class="absolute left-3 top-3 text-gray-400 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                        <input type="text" id="searchInput" placeholder="Search items..." oninput="app.render()" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                    <div id="categoryButtons" class="flex gap-2 overflow-x-auto"></div>
+                </div>
+            </div>
+
+            <div id="itemsList" class="space-y-3"></div>
+        </div>
+    </div>
+
+    <script>
+        const app = {
+            items: [],
+            selectedCategory: 'All',
+            categories: ['All', 'Food', 'Clothing', 'Hygiene', 'Household', 'Other'],
+
+            init() {
+                const saved = localStorage.getItem('charity-inventory');
+                if (saved) {
+                    try {
+                        this.items = JSON.parse(saved);
+                    } catch (e) {
+                        console.error('Error loading data:', e);
+                    }
+                }
+                this.render();
+            },
+
+            save() {
+                localStorage.setItem('charity-inventory', JSON.stringify(this.items));
+            },
+
+            toggleAddForm() {
+                const form = document.getElementById('addForm');
+                form.classList.toggle('hidden');
+            },
+
+            addItem() {
+                const name = document.getElementById('itemName').value.trim();
+                if (!name) return alert('Please enter item name');
+
+                const item = {
+                    id: Date.now(),
+                    name: name,
+                    category: document.getElementById('itemCategory').value,
+                    quantity: parseInt(document.getElementById('itemQuantity').value) || 0,
+                    unit: document.getElementById('itemUnit').value,
+                    minStock: parseInt(document.getElementById('itemMinStock').value) || 5,
+                    expiryDate: document.getElementById('itemExpiry').value
+                };
+
+                this.items.push(item);
+                this.save();
+                
+                document.getElementById('itemName').value = '';
+                document.getElementById('itemQuantity').value = '0';
+                document.getElementById('itemMinStock').value = '5';
+                document.getElementById('itemExpiry').value = '';
+                
+                this.toggleAddForm();
+                this.render();
+            },
+
+            updateQuantity(id, change) {
+                const item = this.items.find(i => i.id === id);
+                if (item) {
+                    item.quantity = Math.max(0, item.quantity + change);
+                    this.save();
+                    this.render();
+                }
+            },
+
+            deleteItem(id) {
+                if (confirm('Remove this item from inventory?')) {
+                    this.items = this.items.filter(i => i.id !== id);
+                    this.save();
+                    this.render();
+                }
+            },
+
+            getItemStatus(item) {
+                if (item.quantity === 0) return { color: 'bg-red-100 border-red-300', text: 'OUT OF STOCK' };
+                if (item.quantity <= item.minStock) return { color: 'bg-orange-100 border-orange-300', text: 'LOW STOCK' };
+                
+                if (item.expiryDate) {
+                    const days = Math.ceil((new Date(item.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+                    if (days < 0) return { color: 'bg-red-100 border-red-300', text: 'EXPIRED' };
+                    if (days <= 7) return { color: 'bg-yellow-100 border-yellow-300', text: `EXPIRES IN ${days}D` };
+                }
+                
+                return { color: 'bg-white border-gray-200', text: '' };
+            },
+
+            exportData() {
+                const dataStr = JSON.stringify(this.items, null, 2);
+                const blob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `inventory-backup-${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+            },
+
+            importData(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const imported = JSON.parse(event.target.result);
+                        if (Array.isArray(imported)) {
+                            this.items = imported;
+                            this.save();
+                            this.render();
+                            alert('Data imported successfully!');
+                        }
+                    } catch (error) {
+                        alert('Error importing data. Please check the file format.');
+                    }
+                };
+                reader.readAsText(file);
+            },
+
+            render() {
+                const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+                const filtered = this.items.filter(item => {
+                    const matchesSearch = item.name.toLowerCase().includes(searchTerm);
+                    const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
+                    return matchesSearch && matchesCategory;
+                });
+
+                // Stats
+                const stats = {
+                    total: this.items.length,
+                    lowStock: this.items.filter(i => i.quantity <= i.minStock && i.quantity > 0).length,
+                    outOfStock: this.items.filter(i => i.quantity === 0).length,
+                    expiringSoon: this.items.filter(i => {
+                        if (!i.expiryDate) return false;
+                        const days = Math.ceil((new Date(i.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+                        return days >= 0 && days <= 7;
+                    }).length
+                };
+
+                document.getElementById('stats').innerHTML = `
+                    <div class="bg-blue-50 p-4 rounded-lg">
+                        <div class="text-2xl font-bold text-blue-600">${stats.total}</div>
+                        <div class="text-sm text-gray-600">Total Items</div>
+                    </div>
+                    <div class="bg-orange-50 p-4 rounded-lg">
+                        <div class="text-2xl font-bold text-orange-600">${stats.lowStock}</div>
+                        <div class="text-sm text-gray-600">Low Stock</div>
+                    </div>
+                    <div class="bg-red-50 p-4 rounded-lg">
+                        <div class="text-2xl font-bold text-red-600">${stats.outOfStock}</div>
+                        <div class="text-sm text-gray-600">Out of Stock</div>
+                    </div>
+                    <div class="bg-yellow-50 p-4 rounded-lg">
+                        <div class="text-2xl font-bold text-yellow-600">${stats.expiringSoon}</div>
+                        <div class="text-sm text-gray-600">Expiring Soon</div>
+                    </div>
+                `;
+
+                // Category buttons
+                document.getElementById('categoryButtons').innerHTML = this.categories.map(cat => `
+                    <button onclick="app.selectedCategory='${cat}'; app.render()" 
+                        class="px-4 py-2 rounded-lg font-medium whitespace-nowrap transition ${
+                            this.selectedCategory === cat
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }">
+                        ${cat}
+                    </button>
+                `).join('');
+
+                // Items list
+                if (filtered.length === 0) {
+                    document.getElementById('itemsList').innerHTML = `
+                        <div class="bg-white rounded-lg shadow-md p-12 text-center">
+                            <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                            </svg>
+                            <p class="text-gray-500 text-lg">
+                                ${this.items.length === 0 ? 'No items yet. Click "Add Item" to get started!' : 'No items match your search.'}
+                            </p>
+                        </div>
+                    `;
+                } else {
+                    document.getElementById('itemsList').innerHTML = filtered.map(item => {
+                        const status = this.getItemStatus(item);
+                        return `
+                            <div class="${status.color} border-2 rounded-lg p-4 transition hover:shadow-md">
+                                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                    <div class="flex-1">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <h3 class="text-lg font-bold text-gray-800">${item.name}</h3>
+                                            <span class="text-xs px-2 py-1 bg-gray-200 rounded-full text-gray-600">${item.category}</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-4 text-sm text-gray-600">
+                                            <span class="font-semibold">
+                                                Stock: <span class="${item.quantity === 0 ? 'text-red-600' : 'text-gray-800'}">${item.quantity} ${item.unit}</span>
+                                            </span>
+                                            ${item.expiryDate ? `<span>Expires: ${new Date(item.expiryDate).toLocaleDateString()}</span>` : ''}
+                                        </div>
+                                        ${status.text ? `
+                                            <div class="flex items-center gap-1 mt-2">
+                                                <svg class="w-4 h-4 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                </svg>
+                                                <span class="text-sm font-semibold text-orange-700">${status.text}</span>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-500 text-white p-2 rounded-lg hover:bg-red-600 transition" title="Remove 1">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
+                                            </svg>
+                                        </button>
+                                        <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 transition" title="Add 1">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                                            </svg>
+                                        </button>
+                                        <button onclick="app.deleteItem(${item.id})" class="bg-gray-500 text-white p-2 rounded-lg hover:bg-gray-600 transition" title="Delete item">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+        };
+
+        // Initialize app when page loads
+        window.addEventListener('DOMContentLoaded', () => app.init());
+    </script>
+</body>
+</html>
