@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Charity Inventory Manager</title>
+    <title>UTS Inventory Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-indigo-50">
@@ -15,7 +15,7 @@
                         <svg class="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                         </svg>
-                        <h1 class="text-3xl font-bold text-gray-800">Inventory Manager</h1>
+                        <h1 class="text-3xl font-bold text-gray-800">UTS Inventory</h1>
                     </div>
                     <div class="flex gap-2">
                         <button onclick="app.exportData()" class="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition text-sm">
@@ -30,7 +30,6 @@
                         </button>
                     </div>
                 </div>
-
                 <div id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
             </div>
 
@@ -68,6 +67,8 @@
                         <option value="boxes">boxes</option>
                         <option value="bags">bags</option>
                         <option value="cans">cans</option>
+                        <option value="packets">packets</option>
+                        <option value="bottles">bottles</option>
                     </select>
                     <input type="number" id="itemMinStock" placeholder="Alert when stock below" value="5" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                     <input type="date" id="itemExpiry" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -78,15 +79,16 @@
             </div>
 
             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                <div class="flex flex-col md:flex-row gap-4">
+                <div class="flex flex-col md:flex-row gap-4 mb-4">
                     <div class="flex-1 relative">
                         <svg class="absolute left-3 top-3 text-gray-400 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                         </svg>
                         <input type="text" id="searchInput" placeholder="Search items..." oninput="app.render()" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
                     </div>
-                    <div id="categoryButtons" class="flex gap-2 overflow-x-auto"></div>
                 </div>
+                <div class="text-sm font-semibold text-gray-600 mb-2">Filter by Category:</div>
+                <div id="categoryButtons" class="flex gap-2 overflow-x-auto pb-2"></div>
             </div>
 
             <div id="itemsList" class="space-y-3"></div>
@@ -100,7 +102,7 @@
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
 
             init() {
-                const saved = localStorage.getItem('charity-inventory');
+                const saved = localStorage.getItem('uts-inventory');
                 if (saved) {
                     try {
                         this.items = JSON.parse(saved);
@@ -112,7 +114,7 @@
             },
 
             save() {
-                localStorage.setItem('charity-inventory', JSON.stringify(this.items));
+                localStorage.setItem('uts-inventory', JSON.stringify(this.items));
             },
 
             toggleAddForm() {
@@ -182,7 +184,7 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `inventory-backup-${new Date().toISOString().split('T')[0]}.json`;
+                a.download = `uts-inventory-backup-${new Date().toISOString().split('T')[0]}.json`;
                 a.click();
             },
 
@@ -208,14 +210,13 @@
             },
 
             render() {
-                const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+                const searchTerm = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
                 const filtered = this.items.filter(item => {
                     const matchesSearch = item.name.toLowerCase().includes(searchTerm);
                     const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
                     return matchesSearch && matchesCategory;
                 });
 
-                // Stats
                 const stats = {
                     total: this.items.length,
                     lowStock: this.items.filter(i => i.quantity <= i.minStock && i.quantity > 0).length,
@@ -246,10 +247,9 @@
                     </div>
                 `;
 
-                // Category buttons
                 document.getElementById('categoryButtons').innerHTML = this.categories.map(cat => `
                     <button onclick="app.selectedCategory='${cat}'; app.render()" 
-                        class="px-4 py-2 rounded-lg font-medium whitespace-nowrap transition ${
+                        class="px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition ${
                             this.selectedCategory === cat
                                 ? 'bg-indigo-600 text-white'
                                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -258,7 +258,6 @@
                     </button>
                 `).join('');
 
-                // Items list
                 if (filtered.length === 0) {
                     document.getElementById('itemsList').innerHTML = `
                         <div class="bg-white rounded-lg shadow-md p-12 text-center">
@@ -321,7 +320,6 @@
             }
         };
 
-        // Initialize app when page loads
         window.addEventListener('DOMContentLoaded', () => app.init());
     </script>
 </body>
