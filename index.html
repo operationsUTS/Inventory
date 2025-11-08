@@ -416,14 +416,16 @@
                 const name = document.getElementById('projectFoodName').value.trim();
                 const cost = parseFloat(document.getElementById('projectFoodCost').value);
                 const date = document.getElementById('projectFoodDate').value;
+                const project = document.getElementById('projectFoodProject').value.trim();
                 
-                if (!name || !cost || !date) return alert('Please fill all fields');
+                if (!name || !cost || !date || !project) return alert('Please fill all fields');
                 
                 this.projectFoods.push({
                     id: Date.now(),
                     name: name,
                     cost: cost,
                     date: date,
+                    project: project,
                     timestamp: new Date().toISOString()
                 });
                 
@@ -434,6 +436,7 @@
                 document.getElementById('projectFoodName').value = '';
                 document.getElementById('projectFoodCost').value = '';
                 document.getElementById('projectFoodDate').value = '';
+                document.getElementById('projectFoodProject').value = '';
                 
                 this.render();
             },
@@ -529,6 +532,15 @@
             renderAdmin() {
                 const shoppingList = this.generateShoppingList();
                 const consumption = this.getConsumptionReport();
+                
+                // Calculate project costs by project
+                const projectTotals = {};
+                this.projectFoods.forEach(p => {
+                    if (!projectTotals[p.project]) {
+                        projectTotals[p.project] = 0;
+                    }
+                    projectTotals[p.project] += p.cost;
+                });
                 const totalProjectCosts = this.projectFoods.reduce((sum, p) => sum + p.cost, 0);
                 
                 const stats = {
