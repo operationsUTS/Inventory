@@ -35,6 +35,7 @@
             currentView: 'inventory',
             isAdmin: false,
             backupCount: 10,
+            editingItemId: null,
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
 
             async init() {
@@ -213,7 +214,18 @@
 
             toggleAddForm() {
                 const formVisible = document.getElementById('addForm')?.classList.contains('hidden') === false;
+                this.editingItemId = null;
                 this.render(!formVisible);
+            },
+
+            startEditItem(id) {
+                this.editingItemId = id;
+                this.render(true);
+            },
+
+            cancelEdit() {
+                this.editingItemId = null;
+                this.render(false);
             },
 
             async addItem() {
@@ -249,6 +261,44 @@
                 
                 this.showNotification('Item added successfully!');
                 this.toggleAddForm();
+            },
+
+            async updateItem() {
+                const name = document.getElementById('itemName').value.trim();
+                if (!name) return alert('Please enter item name');
+
+                const updatedItem = {
+                    name: name,
+                    category: document.getElementById('itemCategory').value,
+                    quantity: parseInt(document.getElementById('itemQuantity').value) || 0,
+                    unit: document.getElementById('itemUnit').value,
+                    minstock: parseInt(document.getElementById('itemMinStock').value) || 5,
+                    expirydate: document.getElementById('itemExpiry').value || null,
+                    location: document.getElementById('itemLocation').value.trim() || null,
+                    notes: document.getElementById('itemNotes').value.trim() || null
+                };
+
+                if (useLocalStorage) {
+                    const item = this.items.find(i => i.id === this.editingItemId);
+                    if (item) {
+                        Object.assign(item, updatedItem);
+                        this.save();
+                        this.createBackup();
+                    }
+                } else {
+                    try {
+                        const { error } = await supabase.from('inventory').update(updatedItem).eq('id', this.editingItemId);
+                        if (error) throw error;
+                        await this.loadData();
+                    } catch (e) {
+                        alert('Error updating item: ' + e.message);
+                        return;
+                    }
+                }
+
+                this.showNotification('Item updated successfully!');
+                this.editingItemId = null;
+                this.render(false);
             },
 
             async updateQuantity(id, change) {
@@ -533,7 +583,6 @@
                 const shoppingList = this.generateShoppingList();
                 const consumption = this.getConsumptionReport();
                 
-                // Calculate project costs by project
                 const projectTotals = {};
                 this.projectFoods.forEach(p => {
                     if (!projectTotals[p.project]) {
@@ -566,7 +615,6 @@
                                     </div>
                                 </div>
 
-                                <!-- Stats Overview -->
                                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                                     <div class="bg-blue-50 p-4 rounded-lg">
                                         <div class="text-2xl font-bold text-blue-600">${stats.total}</div>
@@ -586,7 +634,6 @@
                                     </div>
                                 </div>
 
-                                <!-- Action Buttons -->
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <button onclick="app.exportToCSV()" class="bg-green-600 text-white p-4 rounded-lg font-bold hover:bg-green-700">
                                         📊 Export Full Inventory
@@ -600,7 +647,6 @@
                                 </div>
                             </div>
 
-                            <!-- Shopping List -->
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-4">
                                     <h2 class="text-2xl font-bold">Shopping List (${shoppingList.length} items)</h2>
@@ -641,265 +687,8 @@
                                 </div>
                             </div>
 
-                            <!-- Consumption Patterns -->
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <h2 class="text-2xl font-bold mb-4">Consumption Patterns (Last 30 Days)</h2>
                                 <div class="max-h-96 overflow-y-auto">
                                     ${consumption.length === 0 ? '<p class="text-gray-500 text-center py-8">No usage data yet</p>' : `
-                                        <table class="w-full">
-                                            <thead class="bg-gray-100 sticky top-0">
-                                                <tr>
-                                                    <th class="text-left p-2">Item</th>
-                                                    <th class="text-center p-2">Total Used</th>
-                                                    <th class="text-center p-2">Times Used</th>
-                                                    <th class="text-center p-2">Avg per Use</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${consumption.map(item => `
-                                                    <tr class="border-b hover:bg-gray-50">
-                                                        <td class="p-2 font-semibold">${item.itemName}</td>
-                                                        <td class="p-2 text-center">${item.totalUsed}</td>
-                                                        <td class="p-2 text-center">${item.timesUsed}</td>
-                                                        <td class="p-2 text-center">${item.avgPerUse}</td>
-                                                    </tr>
-                                                `).join('')}
-                                            </tbody>
-                                        </table>
-                                    `}
-                                </div>
-                            </div>
-
-                            <!-- Project Food Costs -->
-                            <div class="bg-white rounded-lg shadow-md p-6">
-                                <h2 class="text-2xl font-bold mb-4">Project Food Costs</h2>
-                                <div class="bg-green-50 p-4 rounded-lg mb-4">
-                                    <div class="text-3xl font-bold text-green-600">$${totalProjectCosts.toFixed(2)}</div>
-                                    <div class="text-sm text-gray-600">Total Project Food Costs</div>
-                                </div>
-                                
-                                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                                    <input type="text" id="projectFoodName" placeholder="Food item name" class="border rounded-lg px-4 py-2">
-                                    <input type="number" id="projectFoodCost" placeholder="Cost ($)" step="0.01" class="border rounded-lg px-4 py-2">
-                                    <input type="date" id="projectFoodDate" class="border rounded-lg px-4 py-2">
-                                    <button onclick="app.addProjectFood()" class="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">
-                                        Add Cost
-                                    </button>
-                                </div>
-
-                                <div class="max-h-96 overflow-y-auto">
-                                    ${this.projectFoods.length === 0 ? '<p class="text-gray-500 text-center py-8">No project food costs recorded yet</p>' : `
-                                        <table class="w-full">
-                                            <thead class="bg-gray-100 sticky top-0">
-                                                <tr>
-                                                    <th class="text-left p-2">Item</th>
-                                                    <th class="text-center p-2">Cost</th>
-                                                    <th class="text-center p-2">Date</th>
-                                                    <th class="text-center p-2">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${this.projectFoods.sort((a, b) => new Date(b.date) - new Date(a.date)).map(item => `
-                                                    <tr class="border-b hover:bg-gray-50">
-                                                        <td class="p-2 font-semibold">${item.name}</td>
-                                                        <td class="p-2 text-center text-green-600 font-bold">${item.cost.toFixed(2)}</td>
-                                                        <td class="p-2 text-center">${new Date(item.date).toLocaleDateString()}</td>
-                                                        <td class="p-2 text-center">
-                                                            <button onclick="app.deleteProjectFood(${item.id})" class="text-red-600 hover:text-red-800">
-                                                                Delete
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                `).join('')}
-                                            </tbody>
-                                        </table>
-                                    `}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            },
-
-            renderInventory(showAddForm) {
-                const searchTerm = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
-                const filtered = this.items.filter(item => {
-                    const matchesSearch = item.name.toLowerCase().includes(searchTerm);
-                    const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
-                    return matchesSearch && matchesCategory;
-                });
-
-                const stats = {
-                    total: this.items.length,
-                    lowStock: this.items.filter(i => i.quantity <= (i.minstock || 5) && i.quantity > 0).length,
-                    outOfStock: this.items.filter(i => i.quantity === 0).length,
-                    expiringSoon: this.items.filter(i => {
-                        if (!i.expirydate) return false;
-                        const days = Math.ceil((new Date(i.expirydate) - new Date()) / (1000 * 60 * 60 * 24));
-                        return days >= 0 && days <= 7;
-                    }).length
-                };
-
-                return `
-                    <div class="min-h-screen p-4">
-                        <div class="max-w-6xl mx-auto">
-                            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                                <div class="flex items-center justify-between mb-4 flex-wrap gap-4">
-                                    <div class="flex items-center gap-3">
-                                        <svg class="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                        </svg>
-                                        <h1 class="text-3xl font-bold text-gray-800">UTS Inventory</h1>
-                                    </div>
-                                    <div class="flex gap-2">
-                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-purple-700 text-sm">Admin Panel</button>' : ''}
-                                        ${!this.isAdmin ? '<button onclick="app.loginAdmin()" class="text-gray-400 hover:text-gray-600 text-sm px-2">Admin</button>' : ''}
-                                        <button onclick="app.exportData()" class="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition text-sm">Export</button>
-                                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition">+ Add Item</button>
-                                    </div>
-                                </div>
-                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                    <div class="bg-blue-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-blue-600">${stats.total}</div>
-                                        <div class="text-sm text-gray-600">Total Items</div>
-                                    </div>
-                                    <div class="bg-orange-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-orange-600">${stats.lowStock}</div>
-                                        <div class="text-sm text-gray-600">Low Stock</div>
-                                    </div>
-                                    <div class="bg-red-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-red-600">${stats.outOfStock}</div>
-                                        <div class="text-sm text-gray-600">Out of Stock</div>
-                                    </div>
-                                    <div class="bg-yellow-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-yellow-600">${stats.expiringSoon}</div>
-                                        <div class="text-sm text-gray-600">Expiring Soon</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div id="addForm" class="bg-white rounded-lg shadow-md p-6 mb-6 ${showAddForm ? '' : 'hidden'}">
-                                <h2 class="text-xl font-bold mb-4">Add New Item</h2>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                    <input type="text" id="itemName" placeholder="Item name *" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <select id="itemCategory" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                        ${this.categories.slice(1).map(cat => `<option value="${cat}">${cat}</option>`).join('')}
-                                    </select>
-                                    <input type="number" id="itemQuantity" placeholder="Quantity" value="0" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <select id="itemUnit" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                        <option value="units">units</option>
-                                        <option value="kg">kg</option>
-                                        <option value="liters">liters</option>
-                                        <option value="boxes">boxes</option>
-                                        <option value="bags">bags</option>
-                                        <option value="cans">cans</option>
-                                        <option value="packets">packets</option>
-                                        <option value="bottles">bottles</option>
-                                    </select>
-                                    <input type="number" id="itemMinStock" placeholder="Alert when stock below" value="5" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <input type="date" id="itemExpiry" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <input type="text" id="itemLocation" placeholder="Storage location (e.g., Freezer A)" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <textarea id="itemNotes" placeholder="Notes (optional)" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows="1"></textarea>
-                                </div>
-                                <button onclick="app.addItem()" class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition">
-                                    Add Item
-                                </button>
-                            </div>
-
-                            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                                <div class="flex flex-col md:flex-row gap-4 mb-4">
-                                    <div class="flex-1 relative">
-                                        <svg class="absolute left-3 top-3 text-gray-400 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                        </svg>
-                                        <input type="text" id="searchInput" placeholder="Search items..." oninput="app.render()" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    </div>
-                                </div>
-                                <div class="text-sm font-semibold text-gray-600 mb-2">Filter by Category:</div>
-                                <div class="flex gap-2 overflow-x-auto pb-2">
-                                    ${this.categories.map(cat => `
-                                        <button onclick="app.selectedCategory='${cat}'; app.render()" 
-                                            class="px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition ${
-                                                this.selectedCategory === cat
-                                                    ? 'bg-indigo-600 text-white'
-                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                            }">
-                                            ${cat}
-                                        </button>
-                                    `).join('')}
-                                </div>
-                            </div>
-
-                            <div class="space-y-3">
-                                ${filtered.length === 0 ? `
-                                    <div class="bg-white rounded-lg shadow-md p-12 text-center">
-                                        <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                        </svg>
-                                        <p class="text-gray-500 text-lg">
-                                            ${this.items.length === 0 ? 'No items yet. Click "Add Item" to get started!' : 'No items match your search.'}
-                                        </p>
-                                    </div>
-                                ` : filtered.map(item => {
-                                    const status = this.getItemStatus(item);
-                                    return `
-                                        <div class="${status.color} border-2 rounded-lg p-4 transition hover:shadow-md">
-                                            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                                                <div class="flex-1">
-                                                    <div class="flex items-center gap-2 mb-1">
-                                                        <h3 class="text-lg font-bold text-gray-800">${item.name}</h3>
-                                                        <span class="text-xs px-2 py-1 bg-gray-200 rounded-full text-gray-600">${item.category}</span>
-                                                        ${item.location ? `<span class="text-xs px-2 py-1 bg-blue-100 rounded-full text-blue-700">📍 ${item.location}</span>` : ''}
-                                                    </div>
-                                                    <div class="flex flex-wrap gap-4 text-sm text-gray-600 mb-2">
-                                                        <span class="font-semibold">
-                                                            Stock: <span class="${item.quantity === 0 ? 'text-red-600' : 'text-gray-800'}">${item.quantity} ${item.unit}</span>
-                                                        </span>
-                                                        ${item.expirydate ? `<span>Expires: ${new Date(item.expirydate).toLocaleDateString()}</span>` : ''}
-                                                    </div>
-                                                    ${item.notes ? `<p class="text-sm text-gray-600 italic">📝 ${item.notes}</p>` : ''}
-                                                    ${status.text ? `
-                                                        <div class="flex items-center gap-1 mt-2">
-                                                            <svg class="w-4 h-4 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                                            </svg>
-                                                            <span class="text-sm font-semibold text-orange-700">${status.text}</span>
-                                                        </div>
-                                                    ` : ''}
-                                                </div>
-                                                <div class="flex items-center gap-2">
-                                                    <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-500 text-white p-2 rounded-lg hover:bg-red-600 transition" title="Remove 1">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-                                                        </svg>
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 transition" title="Add 1">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                                        </svg>
-                                                    </button>
-                                                    <button onclick="app.deleteItem(${item.id})" class="bg-gray-500 text-white p-2 rounded-lg hover:bg-gray-600 transition" title="Delete item">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                        </svg>
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    `;
-                                }).join('')}
-                            </div>
-                        </div>
-                    </div>
-                `;
-            },
-
-            exportData() {
-                this.exportToCSV();
-            }
-        };
-
-        window.addEventListener('DOMContentLoaded', () => app.init());
-    </script>
-</body>
-</html>
+                                        <table class="w
