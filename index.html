@@ -349,7 +349,7 @@
                     expirydate: document.getElementById('itemExpiry').value || null,
                     location: document.getElementById('itemLocation').value.trim() || null,
                     notes: document.getElementById('itemNotes').value.trim() || null,
-                    lastUpdated: new Date().toISOString()
+                    lastupdated: new Date().toISOString()
                 };
 
                 if (useLocalStorage) {
@@ -390,7 +390,7 @@
                     expirydate: document.getElementById(`editExpiry-${id}`).value || null,
                     location: document.getElementById(`editLocation-${id}`).value.trim() || null,
                     notes: document.getElementById(`editNotes-${id}`).value.trim() || null,
-                    lastUpdated: new Date().toISOString()
+                    lastupdated: new Date().toISOString()
                 };
 
                 if (useLocalStorage) {
@@ -425,6 +425,7 @@
 
                 if (useLocalStorage) {
                     item.quantity = newQty;
+                    item.lastUpdated = new Date().toISOString();
                     await this.save();
                     this.createBackup();
                     this.render();
@@ -432,7 +433,7 @@
                     try {
                         const { error } = await supabase.from('inventory').update({ 
                             quantity: newQty,
-                            lastUpdated: new Date().toISOString()
+                            lastupdated: new Date().toISOString()
                         }).eq('id', id);
                         if (error) throw error;
                         await this.loadData();
