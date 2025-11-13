@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UTS Inventory Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .quantity-dropdown {
+            display: none;
+        }
+        .quantity-dropdown.active {
+            display: grid;
+        }
+    </style>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-indigo-50">
     <div id="app"></div>
@@ -29,6 +37,13 @@
             }
         }
 
+        function toggleQuantityDropdown(id) {
+            const dropdown = document.getElementById(`qty-${id}`);
+            if (dropdown) {
+                dropdown.classList.toggle('active');
+            }
+        }
+
         const app = {
             items: [],
             usageHistory: [],
@@ -38,6 +53,7 @@
             isAdmin: false,
             backupCount: 10,
             editingItemId: null,
+            compactView: false,
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
 
             async init() {
@@ -113,6 +129,11 @@
                 this.categories = this.categories.filter(c => c !== category);
                 this.saveCategories();
                 this.showNotification('Category deleted');
+                this.render();
+            },
+
+            toggleCompactView() {
+                this.compactView = !this.compactView;
                 this.render();
             },
 
@@ -255,6 +276,12 @@
             },
 
             recordUsage(itemId, itemName, change) {
+                if (change !== 0) {
+                    const item = this.items.find(i => i.id === itemId);
+                    if (item) {
+                        item.lastUpdated = new Date().toISOString();
+                    }
+                }
                 if (change < 0) {
                     this.usageHistory.push({
                         itemId: itemId,
@@ -289,16 +316,24 @@
                 const formVisible = document.getElementById('addForm')?.classList.contains('hidden') === false;
                 this.editingItemId = null;
                 this.render(!formVisible);
+                if (!formVisible) {
+                    setTimeout(() => {
+                        document.getElementById('addForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }, 100);
+                }
             },
 
             startEditItem(id) {
                 this.editingItemId = id;
-                this.render(true);
+                this.render();
+                setTimeout(() => {
+                    document.getElementById(`edit-form-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 100);
             },
 
             cancelEdit() {
                 this.editingItemId = null;
-                this.render(false);
+                this.render();
             },
 
             async addItem() {
@@ -313,7 +348,8 @@
                     minstock: parseInt(document.getElementById('itemMinStock').value) || 0,
                     expirydate: document.getElementById('itemExpiry').value || null,
                     location: document.getElementById('itemLocation').value.trim() || null,
-                    notes: document.getElementById('itemNotes').value.trim() || null
+                    notes: document.getElementById('itemNotes').value.trim() || null,
+                    lastUpdated: new Date().toISOString()
                 };
 
                 if (useLocalStorage) {
@@ -321,7 +357,7 @@
                     this.items.push(item);
                     await this.save();
                     this.createBackup();
-                    this.showNotification('✓ Item added successfully!');
+                    this.showNotification('✓ Item added!');
                     this.toggleAddForm();
                 } else {
                     try {
@@ -331,7 +367,7 @@
                             throw error;
                         }
                         await this.loadData();
-                        this.showNotification('✓ Item added successfully!');
+                        this.showNotification('✓ Item added!');
                         this.toggleAddForm();
                     } catch (e) {
                         console.error('Full error:', e);
@@ -341,23 +377,24 @@
                 }
             },
 
-            async updateItem() {
-                const name = document.getElementById('itemName').value.trim();
+            async updateItem(id) {
+                const name = document.getElementById(`editName-${id}`).value.trim();
                 if (!name) return alert('Please enter item name');
 
                 const updatedItem = {
                     name: name,
-                    category: document.getElementById('itemCategory').value,
-                    quantity: parseInt(document.getElementById('itemQuantity').value) || 0,
-                    unit: document.getElementById('itemUnit').value,
-                    minstock: parseInt(document.getElementById('itemMinStock').value) || 0,
-                    expirydate: document.getElementById('itemExpiry').value || null,
-                    location: document.getElementById('itemLocation').value.trim() || null,
-                    notes: document.getElementById('itemNotes').value.trim() || null
+                    category: document.getElementById(`editCategory-${id}`).value,
+                    quantity: parseInt(document.getElementById(`editQuantity-${id}`).value) || 0,
+                    unit: document.getElementById(`editUnit-${id}`).value,
+                    minstock: parseInt(document.getElementById(`editMinStock-${id}`).value) || 0,
+                    expirydate: document.getElementById(`editExpiry-${id}`).value || null,
+                    location: document.getElementById(`editLocation-${id}`).value.trim() || null,
+                    notes: document.getElementById(`editNotes-${id}`).value.trim() || null,
+                    lastUpdated: new Date().toISOString()
                 };
 
                 if (useLocalStorage) {
-                    const item = this.items.find(i => i.id === this.editingItemId);
+                    const item = this.items.find(i => i.id === id);
                     if (item) {
                         Object.assign(item, updatedItem);
                         await this.save();
@@ -365,7 +402,7 @@
                     }
                 } else {
                     try {
-                        const { error } = await supabase.from('inventory').update(updatedItem).eq('id', this.editingItemId);
+                        const { error } = await supabase.from('inventory').update(updatedItem).eq('id', id);
                         if (error) throw error;
                         await this.loadData();
                     } catch (e) {
@@ -376,7 +413,7 @@
 
                 this.showNotification('✓ Item updated!');
                 this.editingItemId = null;
-                this.render(false);
+                this.render();
             },
 
             async updateQuantity(id, change) {
@@ -393,7 +430,10 @@
                     this.render();
                 } else {
                     try {
-                        const { error } = await supabase.from('inventory').update({ quantity: newQty }).eq('id', id);
+                        const { error } = await supabase.from('inventory').update({ 
+                            quantity: newQty,
+                            lastUpdated: new Date().toISOString()
+                        }).eq('id', id);
                         if (error) throw error;
                         await this.loadData();
                     } catch (e) {
@@ -435,6 +475,12 @@
                 return { color: 'bg-white border-gray-200', text: '' };
             },
 
+            isRecentlyUpdated(item) {
+                if (!item.lastUpdated) return false;
+                const hoursSince = (new Date() - new Date(item.lastUpdated)) / (1000 * 60 * 60);
+                return hoursSince < 24;
+            },
+
             exportToCSV() {
                 const rows = [['Name', 'Category', 'Quantity', 'Unit', 'Min Stock', 'Location', 'Expiry Date', 'Status', 'Notes']];
                 
@@ -461,7 +507,7 @@
                 a.download = `uts-inventory-${new Date().toISOString().split('T')[0]}.csv`;
                 a.click();
                 URL.revokeObjectURL(url);
-                this.showNotification('CSV exported successfully!');
+                this.showNotification('CSV exported!');
             },
 
             generateShoppingList() {
@@ -636,7 +682,7 @@
                                 this.saveProjectFoods();
                                 this.saveCategories();
                                 this.createBackup();
-                                this.showNotification('Backup restored successfully!');
+                                this.showNotification('Backup restored!');
                                 this.render();
                             } else {
                                 throw new Error('Invalid backup file');
@@ -687,60 +733,60 @@
                 return `
                     <div class="min-h-screen p-4">
                         <div class="max-w-7xl mx-auto">
-                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-3 rounded mb-4 text-sm text-center font-semibold">✓ Connected to Supabase Database</div>' : '<div class="bg-yellow-100 text-yellow-800 p-3 rounded mb-4 text-sm text-center font-semibold">⚠ Using Local Storage Only</div>'}
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-3 rounded mb-4 text-sm text-center font-semibold">✓ Supabase Connected</div>' : '<div class="bg-yellow-100 text-yellow-800 p-3 rounded mb-4 text-sm text-center font-semibold">⚠ Local Storage Mode</div>'}
                             
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
-                                    <h1 class="text-3xl font-bold">Admin Dashboard</h1>
+                                    <h1 class="text-2xl font-bold">Admin Dashboard</h1>
                                     <div class="flex gap-2 flex-wrap">
-                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 font-semibold">Back to Inventory</button>
-                                        <button onclick="app.logoutAdmin()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 font-semibold">Logout</button>
+                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">Back</button>
+                                        <button onclick="app.logoutAdmin()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Logout</button>
                                     </div>
                                 </div>
 
                                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                                     <div class="bg-blue-50 p-4 rounded-lg">
                                         <div class="text-2xl font-bold text-blue-600">${stats.total}</div>
-                                        <div class="text-sm text-gray-600">Total Items</div>
+                                        <div class="text-xs text-gray-600">Total Items</div>
                                     </div>
                                     <div class="bg-orange-50 p-4 rounded-lg">
                                         <div class="text-2xl font-bold text-orange-600">${stats.lowStock}</div>
-                                        <div class="text-sm text-gray-600">Low Stock</div>
+                                        <div class="text-xs text-gray-600">Low Stock</div>
                                     </div>
                                     <div class="bg-red-50 p-4 rounded-lg">
                                         <div class="text-2xl font-bold text-red-600">${stats.outOfStock}</div>
-                                        <div class="text-sm text-gray-600">Out of Stock</div>
+                                        <div class="text-xs text-gray-600">Out of Stock</div>
                                     </div>
                                     <div class="bg-yellow-50 p-4 rounded-lg">
                                         <div class="text-2xl font-bold text-yellow-600">${stats.expiringSoon}</div>
-                                        <div class="text-sm text-gray-600">Expiring Soon</div>
+                                        <div class="text-xs text-gray-600">Expiring Soon</div>
                                     </div>
                                 </div>
 
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <button onclick="app.exportToCSV()" class="bg-green-600 text-white p-4 rounded-lg font-bold hover:bg-green-700">
-                                        📊 Export Full Inventory
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <button onclick="app.exportToCSV()" class="bg-green-600 text-white p-3 rounded-lg font-bold hover:bg-green-700 text-sm">
+                                        📊 Export
                                     </button>
-                                    <button onclick="app.downloadBackup()" class="bg-blue-600 text-white p-4 rounded-lg font-bold hover:bg-blue-700">
-                                        💾 Download Backup
+                                    <button onclick="app.downloadBackup()" class="bg-blue-600 text-white p-3 rounded-lg font-bold hover:bg-blue-700 text-sm">
+                                        💾 Backup
                                     </button>
-                                    <button onclick="app.uploadBackup()" class="bg-orange-600 text-white p-4 rounded-lg font-bold hover:bg-orange-700">
-                                        📤 Restore Backup
+                                    <button onclick="app.uploadBackup()" class="bg-orange-600 text-white p-3 rounded-lg font-bold hover:bg-orange-700 text-sm">
+                                        📤 Restore
                                     </button>
                                 </div>
                             </div>
 
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-4">
-                                    <h2 class="text-2xl font-bold">Manage Categories</h2>
-                                    <button onclick="app.addCategory()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold">
-                                        + Add Category
+                                    <h2 class="text-xl font-bold">Categories</h2>
+                                    <button onclick="app.addCategory()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 text-sm">
+                                        + Add
                                     </button>
                                 </div>
                                 <div class="flex flex-wrap gap-2">
                                     ${this.categories.filter(c => c !== 'All').map(cat => `
-                                        <div class="flex items-center gap-2 bg-gray-100 px-3 py-2 rounded-lg">
-                                            <span class="font-medium">${cat}</span>
+                                        <div class="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
+                                            <span class="text-sm">${cat}</span>
                                             <button onclick="app.deleteCategory('${cat}')" class="text-red-600 hover:text-red-800 font-bold">×</button>
                                         </div>
                                     `).join('')}
@@ -749,117 +795,79 @@
 
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-4 flex-wrap gap-4">
-                                    <h2 class="text-2xl font-bold">Shopping List (${shoppingList.length} items)</h2>
+                                    <h2 class="text-xl font-bold">Shopping List (${shoppingList.length})</h2>
                                     <div class="flex gap-2">
-                                        <button onclick="app.downloadShoppingList()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold">
-                                            📥 Download
+                                        <button onclick="app.downloadShoppingList()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 text-sm">
+                                            📥 CSV
                                         </button>
-                                        <button onclick="app.emailShoppingList()" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 font-semibold">
+                                        <button onclick="app.emailShoppingList()" class="bg-purple-600 text-white px-3 py-2 rounded-lg hover:bg-purple-700 text-sm">
                                             📧 Email
                                         </button>
                                     </div>
                                 </div>
                                 <div class="max-h-96 overflow-y-auto">
-                                    ${shoppingList.length === 0 ? '<p class="text-gray-500 text-center py-8">All items adequately stocked! 🎉</p>' : `
-                                        <table class="w-full">
-                                            <thead class="bg-gray-100 sticky top-0">
-                                                <tr>
-                                                    <th class="text-left p-2">Item</th>
-                                                    <th class="text-left p-2">Category</th>
-                                                    <th class="text-center p-2">Current</th>
-                                                    <th class="text-center p-2">Min Stock</th>
-                                                    <th class="text-left p-2">Location</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${shoppingList.map(item => `
-                                                    <tr class="border-b hover:bg-gray-50">
-                                                        <td class="p-2 font-semibold">${item.name}</td>
-                                                        <td class="p-2 text-sm text-gray-600">${item.category}</td>
-                                                        <td class="p-2 text-center ${item.quantity === 0 ? 'text-red-600 font-bold' : 'text-orange-600'}">${item.quantity} ${item.unit}</td>
-                                                        <td class="p-2 text-center">${item.minstock} ${item.unit}</td>
-                                                        <td class="p-2 text-sm text-gray-600">${item.location || '-'}</td>
-                                                    </tr>
-                                                `).join('')}
-                                            </tbody>
-                                        </table>
+                                    ${shoppingList.length === 0 ? '<p class="text-gray-500 text-center py-8 text-sm">All stocked! 🎉</p>' : `
+                                        <div class="space-y-2">
+                                            ${shoppingList.map(item => `
+                                                <div class="border-b pb-2">
+                                                    <div class="font-semibold text-sm">${item.name}</div>
+                                                    <div class="text-xs text-gray-600">${item.category} • Current: ${item.quantity} ${item.unit} • Need: ${item.minstock} ${item.unit}</div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
                                     `}
                                 </div>
                             </div>
 
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                                <h2 class="text-2xl font-bold mb-4">Consumption Patterns (Last 30 Days)</h2>
+                                <h2 class="text-xl font-bold mb-4">Consumption (30 Days)</h2>
                                 <div class="max-h-96 overflow-y-auto">
-                                    ${consumption.length === 0 ? '<p class="text-gray-500 text-center py-8">No usage data yet</p>' : `
-                                        <table class="w-full">
-                                            <thead class="bg-gray-100 sticky top-0">
-                                                <tr>
-                                                    <th class="text-left p-2">Item</th>
-                                                    <th class="text-center p-2">Total Used</th>
-                                                    <th class="text-center p-2">Times Used</th>
-                                                    <th class="text-center p-2">Avg per Use</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${consumption.map(item => `
-                                                    <tr class="border-b hover:bg-gray-50">
-                                                        <td class="p-2 font-semibold">${item.itemName}</td>
-                                                        <td class="p-2 text-center">${item.totalUsed}</td>
-                                                        <td class="p-2 text-center">${item.timesUsed}</td>
-                                                        <td class="p-2 text-center">${item.avgPerUse}</td>
-                                                    </tr>
-                                                `).join('')}
-                                            </tbody>
-                                        </table>
+                                    ${consumption.length === 0 ? '<p class="text-gray-500 text-center py-8 text-sm">No usage data yet</p>' : `
+                                        <div class="space-y-2">
+                                            ${consumption.slice(0, 10).map(item => `
+                                                <div class="border-b pb-2">
+                                                    <div class="font-semibold text-sm">${item.itemName}</div>
+                                                    <div class="text-xs text-gray-600">Used: ${item.totalUsed} • Times: ${item.timesUsed} • Avg: ${item.avgPerUse}</div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
                                     `}
                                 </div>
                             </div>
 
                             <div class="bg-white rounded-lg shadow-md p-6">
-                                <h2 class="text-2xl font-bold mb-4">Project Food Costs</h2>
+                                <h2 class="text-xl font-bold mb-4">Project Food Costs</h2>
                                 <div class="bg-green-50 p-4 rounded-lg mb-4">
-                                    <div class="text-3xl font-bold text-green-600">${totalProjectCosts.toFixed(2)}</div>
-                                    <div class="text-sm text-gray-600">Total Project Food Costs</div>
+                                    <div class="text-2xl font-bold text-green-600">${totalProjectCosts.toFixed(2)}</div>
+                                    <div class="text-xs text-gray-600">Total</div>
                                 </div>
                                 
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                    <input type="text" id="projectFoodName" placeholder="Food item name" class="border rounded-lg px-4 py-3 text-lg">
-                                    <input type="number" id="projectFoodCost" placeholder="Cost ($)" step="0.01" class="border rounded-lg px-4 py-3 text-lg">
-                                    <input type="date" id="projectFoodDate" class="border rounded-lg px-4 py-3 text-lg">
-                                    <input type="text" id="projectFoodProject" placeholder="Project name" class="border rounded-lg px-4 py-3 text-lg">
+                                <div class="grid grid-cols-1 gap-3 mb-4">
+                                    <input type="text" id="projectFoodName" placeholder="Item name" class="border rounded-lg px-4 py-2 text-sm">
+                                    <input type="number" id="projectFoodCost" placeholder="Cost ($)" step="0.01" class="border rounded-lg px-4 py-2 text-sm">
+                                    <input type="date" id="projectFoodDate" class="border rounded-lg px-4 py-2 text-sm">
+                                    <input type="text" id="projectFoodProject" placeholder="Project name" class="border rounded-lg px-4 py-2 text-sm">
                                 </div>
-                                <button onclick="app.addProjectFood()" class="bg-green-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-green-700 mb-4 w-full md:w-auto text-lg">
+                                <button onclick="app.addProjectFood()" class="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700 w-full text-sm">
                                     Add Cost
                                 </button>
 
-                                <div class="max-h-96 overflow-y-auto">
-                                    ${this.projectFoods.length === 0 ? '<p class="text-gray-500 text-center py-8">No project food costs recorded yet</p>' : `
-                                        <table class="w-full">
-                                            <thead class="bg-gray-100 sticky top-0">
-                                                <tr>
-                                                    <th class="text-left p-2">Item</th>
-                                                    <th class="text-left p-2">Project</th>
-                                                    <th class="text-center p-2">Cost</th>
-                                                    <th class="text-center p-2">Date</th>
-                                                    <th class="text-center p-2">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${this.projectFoods.sort((a, b) => new Date(b.date) - new Date(a.date)).map(item => `
-                                                    <tr class="border-b hover:bg-gray-50">
-                                                        <td class="p-2 font-semibold">${item.name}</td>
-                                                        <td class="p-2 text-gray-600">${item.project}</td>
-                                                        <td class="p-2 text-center text-green-600 font-bold">${item.cost.toFixed(2)}</td>
-                                                        <td class="p-2 text-center">${new Date(item.date).toLocaleDateString()}</td>
-                                                        <td class="p-2 text-center">
-                                                            <button onclick="app.deleteProjectFood(${item.id})" class="text-red-600 hover:text-red-800 font-semibold">
-                                                                Delete
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                `).join('')}
-                                            </tbody>
-                                        </table>
+                                <div class="max-h-96 overflow-y-auto mt-4">
+                                    ${this.projectFoods.length === 0 ? '<p class="text-gray-500 text-center py-8 text-sm">No costs recorded</p>' : `
+                                        <div class="space-y-2">
+                                            ${this.projectFoods.sort((a, b) => new Date(b.date) - new Date(a.date)).map(item => `
+                                                <div class="border-b pb-2 flex justify-between items-start">
+                                                    <div>
+                                                        <div class="font-semibold text-sm">${item.name}</div>
+                                                        <div class="text-xs text-gray-600">${item.project} • ${new Date(item.date).toLocaleDateString()}</div>
+                                                    </div>
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-green-600 font-bold text-sm">${item.cost.toFixed(2)}</span>
+                                                        <button onclick="app.deleteProjectFood(${item.id})" class="text-red-600 hover:text-red-800 text-xs">Delete</button>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
                                     `}
                                 </div>
                             </div>
@@ -874,7 +882,7 @@
                     const matchesSearch = item.name.toLowerCase().includes(searchTerm);
                     const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
                     return matchesSearch && matchesCategory;
-                });
+                }).sort((a, b) => a.name.localeCompare(b.name));
 
                 const stats = {
                     total: this.items.length,
@@ -887,105 +895,86 @@
                     }).length
                 };
 
-                const editingItem = this.editingItemId ? this.items.find(i => i.id === this.editingItemId) : null;
-
                 return `
                     <div class="min-h-screen p-4 pb-20">
                         <div class="max-w-6xl mx-auto">
-                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-3 rounded-lg mb-4 text-sm text-center font-semibold">✓ Connected to Supabase</div>' : '<div class="bg-yellow-100 text-yellow-800 p-3 rounded-lg mb-4 text-sm text-center font-semibold">⚠ Local Storage Mode</div>'}
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local</div>'}
                             
-                            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                                <div class="flex items-center justify-between mb-4 flex-wrap gap-4">
-                                    <div class="flex items-center gap-3">
-                                        <svg class="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                        </svg>
-                                        <h1 class="text-3xl font-bold text-gray-800">UTS Inventory</h1>
-                                    </div>
+                            <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+                                <div class="flex items-center justify-between mb-3 flex-wrap gap-3">
+                                    <h1 class="text-2xl font-bold text-gray-800">UTS Inventory</h1>
                                     <div class="flex gap-2 flex-wrap">
-                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-purple-700 text-sm">Admin</button>' : ''}
-                                        ${!this.isAdmin ? '<button onclick="app.loginAdmin()" class="text-gray-400 hover:text-gray-600 text-sm px-3 py-2">Admin</button>' : ''}
-                                        <button onclick="app.exportData()" class="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 text-sm">Export</button>
-                                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-indigo-700">+ Add</button>
+                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-purple-700 text-xs">Admin</button>' : ''}
+                                        ${!this.isAdmin ? '<button onclick="app.loginAdmin()" class="text-gray-400 hover:text-gray-600 text-xs px-2 py-1">Admin</button>' : ''}
+                                        <button onclick="app.toggleCompactView()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">
+                                            ${this.compactView ? '📋 Normal' : '📊 Compact'}
+                                        </button>
+                                        <button onclick="app.exportData()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">Export</button>
+                                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 text-sm">+ Add</button>
                                     </div>
                                 </div>
-                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                    <div class="bg-blue-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-blue-600">${stats.total}</div>
-                                        <div class="text-sm text-gray-600">Total Items</div>
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <div class="bg-blue-50 p-3 rounded-lg">
+                                        <div class="text-xl font-bold text-blue-600">${stats.total}</div>
+                                        <div class="text-xs text-gray-600">Total</div>
                                     </div>
-                                    <div class="bg-orange-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-orange-600">${stats.lowStock}</div>
-                                        <div class="text-sm text-gray-600">Low Stock</div>
+                                    <div class="bg-orange-50 p-3 rounded-lg">
+                                        <div class="text-xl font-bold text-orange-600">${stats.lowStock}</div>
+                                        <div class="text-xs text-gray-600">Low</div>
                                     </div>
-                                    <div class="bg-red-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-red-600">${stats.outOfStock}</div>
-                                        <div class="text-sm text-gray-600">Out of Stock</div>
+                                    <div class="bg-red-50 p-3 rounded-lg">
+                                        <div class="text-xl font-bold text-red-600">${stats.outOfStock}</div>
+                                        <div class="text-xs text-gray-600">Out</div>
                                     </div>
-                                    <div class="bg-yellow-50 p-4 rounded-lg">
-                                        <div class="text-2xl font-bold text-yellow-600">${stats.expiringSoon}</div>
-                                        <div class="text-sm text-gray-600">Expiring Soon</div>
+                                    <div class="bg-yellow-50 p-3 rounded-lg">
+                                        <div class="text-xl font-bold text-yellow-600">${stats.expiringSoon}</div>
+                                        <div class="text-xs text-gray-600">Expiring</div>
                                     </div>
                                 </div>
                             </div>
 
-                            <div id="addForm" class="bg-white rounded-lg shadow-md p-6 mb-6 ${showAddForm ? '' : 'hidden'}">
-                                <h2 class="text-xl font-bold mb-4">${editingItem ? '✏️ Edit Item' : '➕ Add New Item'}</h2>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                    <input type="text" id="itemName" placeholder="Item name *" value="${editingItem ? editingItem.name : ''}" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    <select id="itemCategory" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                        ${this.categories.filter(c => c !== 'All').map(cat => `<option value="${cat}" ${editingItem && editingItem.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
+                            <div id="addForm" class="bg-white rounded-lg shadow-md p-4 mb-4 ${showAddForm ? '' : 'hidden'}">
+                                <h2 class="text-lg font-bold mb-3">➕ Add New Item</h2>
+                                <div class="grid grid-cols-1 gap-3 mb-3">
+                                    <input type="text" id="itemName" placeholder="Item name *" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <select id="itemCategory" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        ${this.categories.filter(c => c !== 'All').map(cat => `<option value="${cat}">${cat}</option>`).join('')}
                                     </select>
-                                    <input type="number" id="itemQuantity" placeholder="Quantity" value="${editingItem ? editingItem.quantity : '0'}" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    <select id="itemUnit" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                        <option value="units" ${editingItem && editingItem.unit === 'units' ? 'selected' : ''}>units</option>
-                                        <option value="kg" ${editingItem && editingItem.unit === 'kg' ? 'selected' : ''}>kg</option>
-                                        <option value="g" ${editingItem && editingItem.unit === 'g' ? 'selected' : ''}>g</option>
-                                        <option value="liters" ${editingItem && editingItem.unit === 'liters' ? 'selected' : ''}>liters</option>
-                                        <option value="boxes" ${editingItem && editingItem.unit === 'boxes' ? 'selected' : ''}>boxes</option>
-                                        <option value="bags" ${editingItem && editingItem.unit === 'bags' ? 'selected' : ''}>bags</option>
-                                        <option value="cans" ${editingItem && editingItem.unit === 'cans' ? 'selected' : ''}>cans</option>
-                                        <option value="packets" ${editingItem && editingItem.unit === 'packets' ? 'selected' : ''}>packets</option>
-                                        <option value="bottles" ${editingItem && editingItem.unit === 'bottles' ? 'selected' : ''}>bottles</option>
-                                    </select>
-                                    <input type="number" id="itemMinStock" placeholder="Min stock alert (0 = no alert)" value="${editingItem ? (editingItem.minstock || 0) : '0'}" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    <input type="date" id="itemExpiry" value="${editingItem && editingItem.expirydate ? editingItem.expirydate : ''}" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    <input type="text" id="itemLocation" placeholder="Storage location" value="${editingItem && editingItem.location ? editingItem.location : ''}" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    <textarea id="itemNotes" placeholder="Notes (optional)" class="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg" rows="1">${editingItem && editingItem.notes ? editingItem.notes : ''}</textarea>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <input type="number" id="itemQuantity" placeholder="Quantity" value="0" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <select id="itemUnit" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                            <option value="units">units</option>
+                                            <option value="kg">kg</option>
+                                            <option value="g">g</option>
+                                            <option value="liters">liters</option>
+                                            <option value="boxes">boxes</option>
+                                            <option value="bags">bags</option>
+                                            <option value="cans">cans</option>
+                                            <option value="packets">packets</option>
+                                            <option value="bottles">bottles</option>
+                                        </select>
+                                    </div>
+                                    <input type="number" id="itemMinStock" placeholder="Min stock (0 = no alert)" value="0" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <input type="date" id="itemExpiry" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <input type="text" id="itemLocation" placeholder="Location" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <textarea id="itemNotes" placeholder="Notes" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows="2"></textarea>
                                 </div>
-                                <div class="flex gap-3 flex-wrap">
-                                    ${editingItem ? `
-                                        <button onclick="app.updateItem()" class="flex-1 bg-green-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-green-700 text-lg">
-                                            ✓ Save Changes
-                                        </button>
-                                        <button onclick="app.cancelEdit()" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg font-bold hover:bg-gray-600 text-lg">
-                                            Cancel
-                                        </button>
-                                    ` : `
-                                        <button onclick="app.addItem()" class="flex-1 bg-green-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-green-700 text-lg">
-                                            ✓ Add Item
-                                        </button>
-                                    `}
-                                </div>
+                                <button onclick="app.addItem()" class="w-full bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">
+                                    ✓ Add Item
+                                </button>
                             </div>
 
-                            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                                <div class="flex flex-col md:flex-row gap-4 mb-4">
-                                    <div class="flex-1 relative">
-                                        <svg class="absolute left-3 top-3 text-gray-400 w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                        </svg>
-                                        <input type="text" id="searchInput" placeholder="Search items..." oninput="app.render()" class="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-lg">
-                                    </div>
+                            <div class="bg-white rounded-lg shadow-md p-4 mb-4 sticky top-0 z-10">
+                                <div class="mb-3">
+                                    <input type="text" id="searchInput" placeholder="🔍 Search..." oninput="app.render()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
-                                <div class="text-sm font-semibold text-gray-600 mb-3">Filter by Category:</div>
                                 <div class="flex gap-2 overflow-x-auto pb-2">
                                     ${this.categories.map(cat => `
                                         <button onclick="app.selectedCategory='${cat}'; app.render()" 
-                                            class="px-4 py-2 rounded-lg text-base font-medium whitespace-nowrap transition ${
+                                            class="px-3 py-1 rounded-lg text-sm font-medium whitespace-nowrap ${
                                                 this.selectedCategory === cat
                                                     ? 'bg-indigo-600 text-white'
-                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                                    : 'bg-gray-100 text-gray-700'
                                             }">
                                             ${cat}
                                         </button>
@@ -993,79 +982,100 @@
                                 </div>
                             </div>
 
-                            <div class="space-y-4">
+                            <div class="space-y-3">
                                 ${filtered.length === 0 ? `
                                     <div class="bg-white rounded-lg shadow-md p-12 text-center">
-                                        <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                        </svg>
-                                        <p class="text-gray-500 text-lg">
-                                            ${this.items.length === 0 ? 'No items yet. Click "+ Add" to get started!' : 'No items match your search.'}
+                                        <p class="text-gray-500">
+                                            ${this.items.length === 0 ? 'No items yet. Click "+ Add"!' : 'No matches.'}
                                         </p>
                                     </div>
                                 ` : filtered.map(item => {
                                     const status = this.getItemStatus(item);
+                                    const isRecent = this.isRecentlyUpdated(item);
+                                    const isEditing = this.editingItemId === item.id;
+                                    
+                                    if (isEditing) {
+                                        return `
+                                            <div id="edit-form-${item.id}" class="bg-blue-50 border-2 border-blue-400 rounded-lg p-4">
+                                                <h3 class="text-lg font-bold mb-3">✏️ Editing: ${item.name}</h3>
+                                                <div class="grid grid-cols-1 gap-3 mb-3">
+                                                    <input type="text" id="editName-${item.id}" value="${item.name}" class="border rounded-lg px-3 py-2">
+                                                    <select id="editCategory-${item.id}" class="border rounded-lg px-3 py-2">
+                                                        ${this.categories.filter(c => c !== 'All').map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
+                                                    </select>
+                                                    <div class="grid grid-cols-2 gap-2">
+                                                        <input type="number" id="editQuantity-${item.id}" value="${item.quantity}" class="border rounded-lg px-3 py-2">
+                                                        <select id="editUnit-${item.id}" class="border rounded-lg px-3 py-2">
+                                                            <option value="units" ${item.unit === 'units' ? 'selected' : ''}>units</option>
+                                                            <option value="kg" ${item.unit === 'kg' ? 'selected' : ''}>kg</option>
+                                                            <option value="g" ${item.unit === 'g' ? 'selected' : ''}>g</option>
+                                                            <option value="liters" ${item.unit === 'liters' ? 'selected' : ''}>liters</option>
+                                                            <option value="boxes" ${item.unit === 'boxes' ? 'selected' : ''}>boxes</option>
+                                                            <option value="bags" ${item.unit === 'bags' ? 'selected' : ''}>bags</option>
+                                                            <option value="cans" ${item.unit === 'cans' ? 'selected' : ''}>cans</option>
+                                                            <option value="packets" ${item.unit === 'packets' ? 'selected' : ''}>packets</option>
+                                                            <option value="bottles" ${item.unit === 'bottles' ? 'selected' : ''}>bottles</option>
+                                                        </select>
+                                                    </div>
+                                                    <input type="number" id="editMinStock-${item.id}" value="${item.minstock || 0}" placeholder="Min stock" class="border rounded-lg px-3 py-2">
+                                                    <input type="date" id="editExpiry-${item.id}" value="${item.expirydate || ''}" class="border rounded-lg px-3 py-2">
+                                                    <input type="text" id="editLocation-${item.id}" value="${item.location || ''}" placeholder="Location" class="border rounded-lg px-3 py-2">
+                                                    <textarea id="editNotes-${item.id}" placeholder="Notes" class="border rounded-lg px-3 py-2" rows="2">${item.notes || ''}</textarea>
+                                                </div>
+                                                <div class="flex gap-2">
+                                                    <button onclick="app.updateItem(${item.id})" class="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">
+                                                        ✓ Save
+                                                    </button>
+                                                    <button onclick="app.cancelEdit()" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-gray-600">
+                                                        Cancel
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }
+                                    
                                     return `
-                                        <div class="${status.color} border-2 rounded-lg p-5 transition hover:shadow-lg">
-                                            <div class="flex flex-col gap-4">
+                                        <div class="${status.color} border-2 rounded-lg p-3">
+                                            <div class="flex justify-between items-start mb-2">
                                                 <div class="flex-1">
-                                                    <div class="flex items-center gap-2 mb-2 flex-wrap">
-                                                        <h3 class="text-xl font-bold text-gray-800">${item.name}</h3>
-                                                        <span class="text-xs px-3 py-1 bg-gray-200 rounded-full text-gray-600 font-semibold">${item.category}</span>
-                                                        ${item.location ? `<span class="text-xs px-3 py-1 bg-blue-100 rounded-full text-blue-700 font-semibold">📍 ${item.location}</span>` : ''}
+                                                    <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                                        <h3 class="text-lg font-bold text-gray-800">${item.name}</h3>
+                                                        ${isRecent ? '<span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">NEW</span>' : ''}
+                                                        <span class="text-xs px-2 py-0.5 bg-gray-200 rounded-full text-gray-600">${item.category}</span>
+                                                        ${item.location ? `<span class="text-xs px-2 py-0.5 bg-blue-100 rounded-full text-blue-700">📍 ${item.location}</span>` : ''}
                                                     </div>
-                                                    <div class="flex flex-wrap gap-4 text-base text-gray-600 mb-2">
-                                                        <span class="font-bold text-lg">
-                                                            Stock: <span class="${item.quantity === 0 && (item.minstock || 0) > 0 ? 'text-red-600' : 'text-gray-800'}">${item.quantity} ${item.unit}</span>
-                                                        </span>
-                                                        ${item.expirydate ? `<span>Expires: ${new Date(item.expirydate).toLocaleDateString()}</span>` : ''}
+                                                    <div class="text-base font-bold ${item.quantity === 0 && (item.minstock || 0) > 0 ? 'text-red-600' : 'text-gray-800'}">
+                                                        ${item.quantity} ${item.unit}
                                                     </div>
-                                                    ${item.notes ? `<p class="text-sm text-gray-600 italic mb-2">📝 ${item.notes}</p>` : ''}
+                                                    ${item.expirydate ? `<div class="text-xs text-gray-600">Exp: ${new Date(item.expirydate).toLocaleDateString()}</div>` : ''}
+                                                    ${item.notes ? `<div class="text-xs text-gray-600 italic mt-1">📝 ${item.notes}</div>` : ''}
                                                     ${status.text ? `
-                                                        <div class="flex items-center gap-1 mt-2 bg-orange-50 px-3 py-2 rounded-lg inline-flex">
-                                                            <svg class="w-5 h-5 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                                            </svg>
-                                                            <span class="text-sm font-bold text-orange-700">${status.text}</span>
+                                                        <div class="inline-flex items-center gap-1 mt-1 bg-orange-50 px-2 py-1 rounded text-xs font-bold text-orange-700">
+                                                            ⚠ ${status.text}
                                                         </div>
                                                     ` : ''}
                                                 </div>
-                                                
-                                                <div class="grid grid-cols-2 gap-2">
-                                                    <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-3 py-3 rounded-lg hover:bg-red-700 font-bold text-base">
-                                                        -10
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-3 py-3 rounded-lg hover:bg-red-600 font-bold text-base">
-                                                        -5
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-3 py-3 rounded-lg hover:bg-red-500 font-bold text-base">
-                                                        -1
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-3 py-3 rounded-lg hover:bg-green-500 font-bold text-base">
-                                                        +1
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-3 py-3 rounded-lg hover:bg-green-600 font-bold text-base">
-                                                        +5
-                                                    </button>
-                                                    <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-3 py-3 rounded-lg hover:bg-green-700 font-bold text-base">
-                                                        +10
-                                                    </button>
-                                                </div>
-                                                
-                                                <div class="flex gap-2">
-                                                    <button onclick="app.startEditItem(${item.id})" class="flex-1 bg-blue-500 text-white px-4 py-3 rounded-lg hover:bg-blue-600 font-bold text-base flex items-center justify-center gap-2">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                        </svg>
-                                                        Edit
-                                                    </button>
-                                                    <button onclick="app.deleteItem(${item.id})" class="flex-1 bg-gray-500 text-white px-4 py-3 rounded-lg hover:bg-gray-600 font-bold text-base flex items-center justify-center gap-2">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                        </svg>
-                                                        Delete
-                                                    </button>
-                                                </div>
+                                            </div>
+                                            
+                                            <div class="flex gap-2 mb-2">
+                                                <button onclick="toggleQuantityDropdown(${item.id})" class="flex-1 bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 font-semibold text-sm">
+                                                    ± Adjust Qty
+                                                </button>
+                                                <button onclick="app.startEditItem(${item.id})" class="bg-blue-500 text-white px-3 py-2 rounded-lg hover:bg-blue-600 font-semibold text-sm">
+                                                    ✏️
+                                                </button>
+                                                <button onclick="app.deleteItem(${item.id})" class="bg-red-500 text-white px-3 py-2 rounded-lg hover:bg-red-600 font-semibold text-sm">
+                                                    🗑️
+                                                </button>
+                                            </div>
+                                            
+                                            <div id="qty-${item.id}" class="quantity-dropdown grid-cols-3 gap-2">
+                                                <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-2 py-2 rounded font-bold text-sm">-10</button>
+                                                <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-2 py-2 rounded font-bold text-sm">-5</button>
+                                                <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-2 py-2 rounded font-bold text-sm">-1</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-2 py-2 rounded font-bold text-sm">+1</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-2 py-2 rounded font-bold text-sm">+5</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-2 py-2 rounded font-bold text-sm">+10</button>
                                             </div>
                                         </div>
                                     `;
