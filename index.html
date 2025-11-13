@@ -348,12 +348,12 @@
                     minstock: parseInt(document.getElementById('itemMinStock').value) || 0,
                     expirydate: document.getElementById('itemExpiry').value || null,
                     location: document.getElementById('itemLocation').value.trim() || null,
-                    notes: document.getElementById('itemNotes').value.trim() || null,
-                    lastUpdated: new Date().toISOString()
+                    notes: document.getElementById('itemNotes').value.trim() || null
                 };
 
                 if (useLocalStorage) {
                     item.id = Date.now();
+                    item.lastUpdated = new Date().toISOString();
                     this.items.push(item);
                     await this.save();
                     this.createBackup();
@@ -389,14 +389,14 @@
                     minstock: parseInt(document.getElementById(`editMinStock-${id}`).value) || 0,
                     expirydate: document.getElementById(`editExpiry-${id}`).value || null,
                     location: document.getElementById(`editLocation-${id}`).value.trim() || null,
-                    notes: document.getElementById(`editNotes-${id}`).value.trim() || null,
-                    lastUpdated: new Date().toISOString()
+                    notes: document.getElementById(`editNotes-${id}`).value.trim() || null
                 };
 
                 if (useLocalStorage) {
                     const item = this.items.find(i => i.id === id);
                     if (item) {
                         Object.assign(item, updatedItem);
+                        item.lastUpdated = new Date().toISOString();
                         await this.save();
                         this.createBackup();
                     }
@@ -431,8 +431,7 @@
                 } else {
                     try {
                         const { error } = await supabase.from('inventory').update({ 
-                            quantity: newQty,
-                            lastUpdated: new Date().toISOString()
+                            quantity: newQty
                         }).eq('id', id);
                         if (error) throw error;
                         await this.loadData();
