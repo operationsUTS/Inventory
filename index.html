@@ -26,6 +26,36 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
+        /*
+        ============================================
+        SUPABASE SETUP INSTRUCTIONS
+        ============================================
+        
+        For CROSS-DEVICE SYNC to work, you need to create this table in Supabase:
+        
+        1. Go to Supabase Dashboard → SQL Editor
+        2. Run this SQL:
+        
+        CREATE TABLE recipe_projects (
+            id BIGINT PRIMARY KEY,
+            name TEXT NOT NULL,
+            recipes JSONB DEFAULT '[]'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            archived BOOLEAN DEFAULT FALSE,
+            notes TEXT
+        );
+        
+        ALTER TABLE recipe_projects ENABLE ROW LEVEL SECURITY;
+        
+        CREATE POLICY "Enable all access for authenticated users" ON recipe_projects
+            FOR ALL USING (true);
+        
+        3. Done! Now recipes will sync across all devices.
+        
+        If you don't create this table, recipes will still work but only save locally (no sync).
+        ============================================
+        */
+        
         const SUPABASE_URL = 'https://slelvrwtokiqlhletpsf.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsZWx2cnd0b2tpcWxobGV0cHNmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3ODM3MTEsImV4cCI6MjA3NzM1OTcxMX0.mvO2vGyMlvmeV0tn60RL9dbzKkScBfXcFqMY-rTBmHM';
         const ADMIN_PASSWORD = 'UTS2025Admin';
@@ -77,9 +107,16 @@
                 
                 if (!useLocalStorage && supabase) {
                     try {
+                        // Subscribe to inventory changes
                         supabase.channel('inventory_changes').on('postgres_changes', 
                             { event: '*', schema: 'public', table: 'inventory' }, 
                             () => this.loadData()
+                        ).subscribe();
+                        
+                        // Subscribe to recipe project changes
+                        supabase.channel('recipe_project_changes').on('postgres_changes',
+                            { event: '*', schema: 'public', table: 'recipe_projects' },
+                            () => this.loadRecipeProjects()
                         ).subscribe();
                     } catch (e) {
                         console.log('Real-time subscription failed:', e);
@@ -315,19 +352,94 @@
             },
 
             loadRecipeProjects() {
-                const saved = localStorage.getItem('uts-recipe-projects');
-                if (saved) {
-                    try {
-                        this.recipeProjects = JSON.parse(saved);
-                    } catch (e) {
-                        this.recipeProjects = [];
+                if (!useLocalStorage && supabase) {
+                    this.loadRecipeProjectsFromSupabase();
+                } else {
+                    const saved = localStorage.getItem('uts-recipe-projects');
+                    if (saved) {
+                        try {
+                            this.recipeProjects = JSON.parse(saved);
+                        } catch (e) {
+                            this.recipeProjects = [];
+                        }
+                    }
+                }
+            },
+
+            async loadRecipeProjectsFromSupabase() {
+                try {
+                    const { data, error } = await supabase
+                        .from('recipe_projects')
+                        .select('*')
+                        .order('created_at', { ascending: false });
+                    
+                    if (error) {
+                        console.error('Error loading recipe projects from Supabase:', error);
+                        // Fallback to localStorage
+                        this.loadRecipeProjects();
+                        return;
+                    }
+                    
+                    if (data) {
+                        this.recipeProjects = data.map(project => ({
+                            id: project.id,
+                            name: project.name,
+                            recipes: project.recipes || [],
+                            createdAt: project.created_at,
+                            archived: project.archived || false,
+                            notes: project.notes || ''
+                        }));
+                        // Also save to localStorage as backup
+                        localStorage.setItem('uts-recipe-projects', JSON.stringify(this.recipeProjects));
+                    }
+                } catch (e) {
+                    console.error('Exception loading from Supabase:', e);
+                    // Fallback to localStorage
+                    const saved = localStorage.getItem('uts-recipe-projects');
+                    if (saved) {
+                        try {
+                            this.recipeProjects = JSON.parse(saved);
+                        } catch (parseError) {
+                            this.recipeProjects = [];
+                        }
                     }
                 }
             },
 
             saveRecipeProjects() {
                 localStorage.setItem('uts-recipe-projects', JSON.stringify(this.recipeProjects));
+                
+                if (!useLocalStorage && supabase) {
+                    this.saveRecipeProjectsToSupabase();
+                }
+                
                 this.createBackup();
+            },
+
+            async saveRecipeProjectsToSupabase() {
+                try {
+                    // Save each project
+                    for (const project of this.recipeProjects) {
+                        const projectData = {
+                            id: project.id,
+                            name: project.name,
+                            recipes: project.recipes,
+                            created_at: project.createdAt,
+                            archived: project.archived,
+                            notes: project.notes || ''
+                        };
+                        
+                        const { error } = await supabase
+                            .from('recipe_projects')
+                            .upsert(projectData);
+                        
+                        if (error) {
+                            console.error('Error saving project to Supabase:', error);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Exception saving to Supabase:', e);
+                }
             },
 
             createNewProject() {
@@ -432,8 +544,8 @@
             },
 
             async parseRecipe(projectId) {
-                const input = document.getElementById('recipeInput').value;
-                const servings = parseInt(document.getElementById('recipeServings').value) || 50;
+                const input = document.getElementById(`recipeInput-${projectId}`).value;
+                const servings = parseInt(document.getElementById(`recipeServings-${projectId}`).value) || 50;
 
                 if (!input.trim()) {
                     this.showNotification('Please paste a recipe first!', 'error');
@@ -448,19 +560,18 @@
 
                 // Try simple parsing first (look for common patterns)
                 const simpleRecipe = this.simpleRecipeParser(input, servings);
-                if (simpleRecipe) {
+                if (simpleRecipe && simpleRecipe.ingredients.length > 0) {
                     project.recipes.push(simpleRecipe);
                     this.saveRecipeProjects();
-                    this.showNotification('✓ Recipe added to project!');
-                    document.getElementById('recipeInput').value = '';
-                    document.getElementById('recipeServings').value = '50';
+                    this.showNotification(`✓ Recipe added with ${simpleRecipe.ingredients.length} ingredients!`);
+                    document.getElementById(`recipeInput-${projectId}`).value = '';
+                    document.getElementById(`recipeServings-${projectId}`).value = '50';
                     this.render();
                     return;
                 }
 
                 // If simple parsing failed, inform user
-                this.showNotification('Could not auto-parse recipe. Please use "Add Manual Recipe" below.', 'error');
-                this.render();
+                this.showNotification('Could not auto-parse recipe. Please use "Manual Entry" instead.', 'error');
             },
 
             simpleRecipeParser(text, servings) {
@@ -471,35 +582,97 @@
                 const recipeName = lines[0].trim();
                 const ingredients = [];
 
-                // Common patterns: "2kg beef", "1 can tomatoes", "500g flour"
-                const ingredientRegex = /^[\s\-\*•]*(\d+\.?\d*)\s*(kg|g|liters?|ml|cans?|tins?|boxes?|packets?|bottles?|cups?|tbsp|tsp|pieces?|units?)[\s,]*(.+?)$/i;
+                // Enhanced patterns to catch more formats
+                // Pattern 1: "2kg beef", "500g flour", "3 cans tomatoes"
+                const pattern1 = /^[\s\-\*•]*(\d+\.?\d*)\s*(kg|g|liters?|ml|cans?|tins?|boxes?|packets?|bottles?|cups?|tbsp|tsp|tablespoons?|teaspoons?|pieces?|units?|cloves?|slices?)[\s,]*(.+?)$/i;
+                
+                // Pattern 2: "beef mince - 2kg", "flour - 500g"
+                const pattern2 = /^[\s\-\*•]*(.+?)[\s\-]+(\d+\.?\d*)\s*(kg|g|liters?|ml|cans?|tins?|boxes?|packets?|bottles?|cups?|tbsp|tsp|pieces?|units?).*$/i;
 
                 for (let i = 1; i < lines.length; i++) {
                     const line = lines[i].trim();
-                    const match = line.match(ingredientRegex);
+                    if (line.length < 3) continue; // Skip very short lines
+                    
+                    let match = line.match(pattern1);
+                    let quantity, unit, name;
                     
                     if (match) {
-                        const quantity = parseFloat(match[1]);
-                        let unit = match[2].toLowerCase();
-                        const name = match[3].trim().replace(/[,\(\)].*/, '').trim();
-
+                        quantity = parseFloat(match[1]);
+                        unit = match[2].toLowerCase();
+                        name = match[3].trim().replace(/[,\(\)].*/, '').trim();
+                    } else {
+                        match = line.match(pattern2);
+                        if (match) {
+                            name = match[1].trim();
+                            quantity = parseFloat(match[2]);
+                            unit = match[3].toLowerCase();
+                        }
+                    }
+                    
+                    if (match && !isNaN(quantity) && name && unit) {
                         // Normalize units
                         if (unit.includes('liter')) unit = 'liters';
                         if (unit.includes('can') || unit.includes('tin')) unit = 'cans';
                         if (unit === 'piece' || unit === 'pieces') unit = 'units';
+                        if (unit === 'tablespoon' || unit === 'tablespoons') unit = 'tbsp';
+                        if (unit === 'teaspoon' || unit === 'teaspoons') unit = 'tsp';
+                        if (unit === 'clove' || unit === 'cloves') unit = 'cloves';
+                        if (unit === 'slice' || unit === 'slices') unit = 'slices';
 
-                        // Guess category
+                        // Guess category based on keywords
                         let category = 'Misc';
                         const nameLower = name.toLowerCase();
-                        if (nameLower.includes('pasta') || nameLower.includes('rice') || nameLower.includes('noodle')) category = 'Pasta/Grain';
-                        else if (nameLower.includes('tomato') || nameLower.includes('bean') || nameLower.includes('corn')) category = 'Canned Goods';
-                        else if (nameLower.includes('milk') || nameLower.includes('cheese') || nameLower.includes('butter') || nameLower.includes('cream')) category = 'Dairy';
-                        else if (nameLower.includes('potato') || nameLower.includes('onion') || nameLower.includes('carrot') || nameLower.includes('celery')) category = 'Fresh Veg';
-                        else if (nameLower.includes('apple') || nameLower.includes('banana') || nameLower.includes('orange')) category = 'Fresh Fruit';
-                        else if (nameLower.includes('chicken') || nameLower.includes('beef') || nameLower.includes('pork') || nameLower.includes('meat')) category = 'Frozen Meat';
-                        else if (nameLower.includes('salt') || nameLower.includes('pepper') || nameLower.includes('spice')) category = 'Seasoning';
-                        else if (nameLower.includes('oil') || nameLower.includes('sauce') || nameLower.includes('vinegar')) category = 'Condiments';
-                        else if (nameLower.includes('flour') || nameLower.includes('sugar') || nameLower.includes('baking')) category = 'Baking';
+                        
+                        // More comprehensive categorization
+                        if (nameLower.includes('pasta') || nameLower.includes('rice') || nameLower.includes('noodle') || 
+                            nameLower.includes('spaghetti') || nameLower.includes('macaroni') || nameLower.includes('couscous')) {
+                            category = 'Pasta/Grain';
+                        }
+                        else if (nameLower.includes('tomato') || nameLower.includes('bean') || nameLower.includes('corn') || 
+                                 nameLower.includes('soup') || nameLower.includes('canned') || nameLower.includes('tinned')) {
+                            category = 'Canned Goods';
+                        }
+                        else if (nameLower.includes('milk') || nameLower.includes('cheese') || nameLower.includes('butter') || 
+                                 nameLower.includes('cream') || nameLower.includes('yogurt') || nameLower.includes('yoghurt')) {
+                            category = 'Dairy';
+                        }
+                        else if (nameLower.includes('potato') || nameLower.includes('onion') || nameLower.includes('carrot') || 
+                                 nameLower.includes('celery') || nameLower.includes('lettuce') || nameLower.includes('cabbage') ||
+                                 nameLower.includes('broccoli') || nameLower.includes('cauliflower') || nameLower.includes('pepper') ||
+                                 nameLower.includes('capsicum') || nameLower.includes('zucchini') || nameLower.includes('courgette')) {
+                            category = 'Fresh Veg';
+                        }
+                        else if (nameLower.includes('apple') || nameLower.includes('banana') || nameLower.includes('orange') ||
+                                 nameLower.includes('lemon') || nameLower.includes('lime') || nameLower.includes('berry') ||
+                                 nameLower.includes('melon') || nameLower.includes('grape')) {
+                            category = 'Fresh Fruit';
+                        }
+                        else if (nameLower.includes('chicken') || nameLower.includes('beef') || nameLower.includes('pork') || 
+                                 nameLower.includes('lamb') || nameLower.includes('meat') || nameLower.includes('mince') ||
+                                 nameLower.includes('steak') || nameLower.includes('sausage')) {
+                            category = 'Frozen Meat';
+                        }
+                        else if (nameLower.includes('peas') || nameLower.includes('frozen veg')) {
+                            category = 'Frozen Veg';
+                        }
+                        else if (nameLower.includes('salt') || nameLower.includes('pepper') || nameLower.includes('spice') ||
+                                 nameLower.includes('cumin') || nameLower.includes('paprika') || nameLower.includes('oregano') ||
+                                 nameLower.includes('basil') || nameLower.includes('thyme') || nameLower.includes('garlic') ||
+                                 nameLower.includes('ginger')) {
+                            category = 'Seasoning';
+                        }
+                        else if (nameLower.includes('oil') || nameLower.includes('sauce') || nameLower.includes('vinegar') ||
+                                 nameLower.includes('mayo') || nameLower.includes('ketchup') || nameLower.includes('mustard') ||
+                                 nameLower.includes('soy sauce') || nameLower.includes('stock')) {
+                            category = 'Condiments';
+                        }
+                        else if (nameLower.includes('flour') || nameLower.includes('sugar') || nameLower.includes('baking') ||
+                                 nameLower.includes('yeast') || nameLower.includes('powder')) {
+                            category = 'Baking';
+                        }
+                        else if (nameLower.includes('bread') || nameLower.includes('bun') || nameLower.includes('roll')) {
+                            category = 'Bread';
+                        }
 
                         ingredients.push({
                             name: name,
@@ -1140,7 +1313,7 @@
                 return `
                     <div class="min-h-screen p-4">
                         <div class="max-w-6xl mx-auto">
-                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local</div>'}
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase Connected - Inventory & Recipes Syncing Across Devices</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local Storage Mode - No Cross-Device Sync</div>'}
                             
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-4 flex-wrap gap-4">
@@ -1337,7 +1510,7 @@
                                                 
                                                 <div class="space-y-3">
                                                     <textarea
-                                                        id="recipeInput"
+                                                        id="recipeInput-${project.id}"
                                                         placeholder="Paste recipe here with quantities...
 
 Example format:
@@ -1352,7 +1525,7 @@ Spaghetti Bolognese
                                                     <div class="flex gap-2">
                                                         <input
                                                             type="number"
-                                                            id="recipeServings"
+                                                            id="recipeServings-${project.id}"
                                                             value="50"
                                                             placeholder="Servings"
                                                             class="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm"
