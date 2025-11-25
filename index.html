@@ -375,6 +375,62 @@
                 this.render();
             },
 
+            addManualRecipe(projectId) {
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+
+                const recipeName = prompt('Enter recipe name:');
+                if (!recipeName || !recipeName.trim()) return;
+
+                const newRecipe = {
+                    id: Date.now(),
+                    name: recipeName.trim(),
+                    servings: 50,
+                    originalText: '',
+                    ingredients: [],
+                    createdAt: new Date().toISOString()
+                };
+
+                project.recipes.push(newRecipe);
+                this.saveRecipeProjects();
+                this.showNotification('✓ Recipe created! Now add ingredients.');
+                this.render();
+            },
+
+            addIngredientToRecipe(projectId, recipeId) {
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+                
+                const recipe = project.recipes.find(r => r.id === recipeId);
+                if (!recipe) return;
+
+                const name = prompt('Ingredient name:');
+                if (!name || !name.trim()) return;
+
+                const quantity = parseFloat(prompt('Quantity:'));
+                if (isNaN(quantity)) return;
+
+                const unit = prompt('Unit (kg, g, liters, cans, etc):');
+                if (!unit || !unit.trim()) return;
+
+                const category = prompt('Category:\n1=Pasta/Grain, 2=Canned Goods, 3=Dairy, 4=Fresh Veg, 5=Fresh Fruit\n6=Frozen Meat, 7=Frozen Veg, 8=Condiments, 9=Seasoning, 10=Baking, 11=Misc');
+                const categories = ['Pasta/Grain', 'Canned Goods', 'Dairy', 'Fresh Veg', 'Fresh Fruit', 'Frozen Meat', 'Frozen Veg', 'Condiments', 'Seasoning', 'Baking', 'Misc'];
+                const catIndex = parseInt(category) - 1;
+                const selectedCategory = catIndex >= 0 && catIndex < categories.length ? categories[catIndex] : 'Misc';
+
+                recipe.ingredients.push({
+                    name: name.trim(),
+                    quantity: quantity,
+                    unit: unit.trim(),
+                    category: selectedCategory,
+                    checked: false
+                });
+
+                this.saveRecipeProjects();
+                this.showNotification('✓ Ingredient added!');
+                this.render();
+            },
+
             async parseRecipe(projectId) {
                 const input = document.getElementById('recipeInput').value;
                 const servings = parseInt(document.getElementById('recipeServings').value) || 50;
@@ -390,80 +446,81 @@
                     return;
                 }
 
-                document.getElementById('recipeLoadingIndicator').classList.remove('hidden');
-
-                try {
-                    const response = await fetch("https://api.anthropic.com/v1/messages", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                            model: "claude-sonnet-4-20250514",
-                            max_tokens: 2000,
-                            messages: [
-                                {
-                                    role: "user",
-                                    content: `Parse this recipe and extract the ingredients as a JSON array. For each ingredient, provide: name (item name), quantity (number), unit (e.g., kg, g, cups, pieces), and category (best guess from: Pasta/Grain, Canned Goods, Dairy, Fresh Veg, Fresh Fruit, Frozen Meat, Frozen Veg, Condiments, Seasoning, Baking, Bread, or Misc).
-
-Recipe for ${servings} servings:
-${input}
-
-Respond ONLY with valid JSON in this exact format, no other text:
-{
-  "recipeName": "name of the dish",
-  "originalServings": number,
-  "ingredients": [
-    {"name": "ingredient name", "quantity": number, "unit": "unit", "category": "category"}
-  ]
-}
-
-DO NOT include any markdown formatting, backticks, or explanatory text. ONLY output the JSON object.`
-                                }
-                            ]
-                        })
-                    });
-
-                    if (!response.ok) {
-                        throw new Error('Failed to parse recipe');
-                    }
-
-                    const data = await response.json();
-                    let responseText = data.content[0].text;
-                    
-                    responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-                    
-                    const parsedRecipe = JSON.parse(responseText);
-
-                    const scaleFactor = servings / parsedRecipe.originalServings;
-                    const scaledIngredients = parsedRecipe.ingredients.map(ing => ({
-                        ...ing,
-                        quantity: Math.round(ing.quantity * scaleFactor * 10) / 10,
-                        checked: false
-                    }));
-
-                    const newRecipe = {
-                        id: Date.now(),
-                        name: parsedRecipe.recipeName,
-                        servings: servings,
-                        originalText: input,
-                        ingredients: scaledIngredients,
-                        createdAt: new Date().toISOString()
-                    };
-
-                    project.recipes.push(newRecipe);
+                // Try simple parsing first (look for common patterns)
+                const simpleRecipe = this.simpleRecipeParser(input, servings);
+                if (simpleRecipe) {
+                    project.recipes.push(simpleRecipe);
                     this.saveRecipeProjects();
                     this.showNotification('✓ Recipe added to project!');
                     document.getElementById('recipeInput').value = '';
                     document.getElementById('recipeServings').value = '50';
-
-                } catch (error) {
-                    console.error('Error parsing recipe:', error);
-                    this.showNotification('Error parsing recipe. Please try again.', 'error');
-                } finally {
-                    document.getElementById('recipeLoadingIndicator').classList.add('hidden');
                     this.render();
+                    return;
                 }
+
+                // If simple parsing failed, inform user
+                this.showNotification('Could not auto-parse recipe. Please use "Add Manual Recipe" below.', 'error');
+                this.render();
+            },
+
+            simpleRecipeParser(text, servings) {
+                // Simple regex-based parser for common recipe formats
+                const lines = text.split('\n').filter(line => line.trim());
+                if (lines.length === 0) return null;
+
+                const recipeName = lines[0].trim();
+                const ingredients = [];
+
+                // Common patterns: "2kg beef", "1 can tomatoes", "500g flour"
+                const ingredientRegex = /^[\s\-\*•]*(\d+\.?\d*)\s*(kg|g|liters?|ml|cans?|tins?|boxes?|packets?|bottles?|cups?|tbsp|tsp|pieces?|units?)[\s,]*(.+?)$/i;
+
+                for (let i = 1; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    const match = line.match(ingredientRegex);
+                    
+                    if (match) {
+                        const quantity = parseFloat(match[1]);
+                        let unit = match[2].toLowerCase();
+                        const name = match[3].trim().replace(/[,\(\)].*/, '').trim();
+
+                        // Normalize units
+                        if (unit.includes('liter')) unit = 'liters';
+                        if (unit.includes('can') || unit.includes('tin')) unit = 'cans';
+                        if (unit === 'piece' || unit === 'pieces') unit = 'units';
+
+                        // Guess category
+                        let category = 'Misc';
+                        const nameLower = name.toLowerCase();
+                        if (nameLower.includes('pasta') || nameLower.includes('rice') || nameLower.includes('noodle')) category = 'Pasta/Grain';
+                        else if (nameLower.includes('tomato') || nameLower.includes('bean') || nameLower.includes('corn')) category = 'Canned Goods';
+                        else if (nameLower.includes('milk') || nameLower.includes('cheese') || nameLower.includes('butter') || nameLower.includes('cream')) category = 'Dairy';
+                        else if (nameLower.includes('potato') || nameLower.includes('onion') || nameLower.includes('carrot') || nameLower.includes('celery')) category = 'Fresh Veg';
+                        else if (nameLower.includes('apple') || nameLower.includes('banana') || nameLower.includes('orange')) category = 'Fresh Fruit';
+                        else if (nameLower.includes('chicken') || nameLower.includes('beef') || nameLower.includes('pork') || nameLower.includes('meat')) category = 'Frozen Meat';
+                        else if (nameLower.includes('salt') || nameLower.includes('pepper') || nameLower.includes('spice')) category = 'Seasoning';
+                        else if (nameLower.includes('oil') || nameLower.includes('sauce') || nameLower.includes('vinegar')) category = 'Condiments';
+                        else if (nameLower.includes('flour') || nameLower.includes('sugar') || nameLower.includes('baking')) category = 'Baking';
+
+                        ingredients.push({
+                            name: name,
+                            quantity: quantity,
+                            unit: unit,
+                            category: category,
+                            checked: false
+                        });
+                    }
+                }
+
+                if (ingredients.length === 0) return null;
+
+                return {
+                    id: Date.now(),
+                    name: recipeName,
+                    servings: servings,
+                    originalText: text,
+                    ingredients: ingredients,
+                    createdAt: new Date().toISOString()
+                };
             },
 
             deleteRecipe(projectId, recipeId) {
@@ -1273,17 +1330,23 @@ DO NOT include any markdown formatting, backticks, or explanatory text. ONLY out
                                         ${!project.archived ? `
                                             <div class="mb-4 border-t pt-4">
                                                 <h4 class="font-semibold mb-3">➕ Add Recipe to Project</h4>
+                                                
+                                                <div class="bg-blue-50 p-3 rounded-lg mb-3 text-xs">
+                                                    <strong>📝 Auto-Parse:</strong> Paste recipe with format like "2kg beef" or "500g flour"
+                                                </div>
+                                                
                                                 <div class="space-y-3">
                                                     <textarea
                                                         id="recipeInput"
-                                                        placeholder="Paste recipe here...
+                                                        placeholder="Paste recipe here with quantities...
 
-Example:
-Spaghetti Bolognese (serves 10)
-- 2kg beef mince
-- 1kg spaghetti
-- 800g canned tomatoes
-- 2 onions, diced"
+Example format:
+Spaghetti Bolognese
+2kg beef mince
+1kg spaghetti
+800g canned tomatoes
+2 onions
+4 cloves garlic"
                                                         class="w-full h-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                                     ></textarea>
                                                     <div class="flex gap-2">
@@ -1297,13 +1360,16 @@ Spaghetti Bolognese (serves 10)
                                                         />
                                                         <button
                                                             onclick="app.parseRecipe(${project.id})"
-                                                            class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold"
+                                                            class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold text-sm"
                                                         >
-                                                            ✓ Add Recipe
+                                                            ✓ Auto-Parse Recipe
                                                         </button>
-                                                    </div>
-                                                    <div id="recipeLoadingIndicator" class="hidden text-center text-indigo-600 font-semibold">
-                                                        ⏳ Processing recipe with AI...
+                                                        <button
+                                                            onclick="app.addManualRecipe(${project.id})"
+                                                            class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-semibold text-sm whitespace-nowrap"
+                                                        >
+                                                            ➕ Manual Entry
+                                                        </button>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1317,18 +1383,30 @@ Spaghetti Bolognese (serves 10)
                                                     <div class="flex justify-between items-start mb-3">
                                                         <div>
                                                             <h4 class="font-bold text-gray-800">${recipe.name}</h4>
-                                                            <p class="text-xs text-gray-600">${recipe.servings} servings</p>
+                                                            <p class="text-xs text-gray-600">${recipe.servings} servings • ${recipe.ingredients.length} ingredients</p>
                                                         </div>
-                                                        <button
-                                                            onclick="app.deleteRecipe(${project.id}, ${recipe.id})"
-                                                            class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600"
-                                                        >
-                                                            Delete
-                                                        </button>
+                                                        <div class="flex gap-2">
+                                                            ${!project.archived ? `
+                                                                <button
+                                                                    onclick="app.addIngredientToRecipe(${project.id}, ${recipe.id})"
+                                                                    class="bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600"
+                                                                >
+                                                                    + Ingredient
+                                                                </button>
+                                                            ` : ''}
+                                                            <button
+                                                                onclick="app.deleteRecipe(${project.id}, ${recipe.id})"
+                                                                class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                     
                                                     <div class="space-y-1">
-                                                        ${recipe.ingredients.map((ing, idx) => {
+                                                        ${recipe.ingredients.length === 0 ? `
+                                                            <p class="text-gray-500 text-sm italic py-2">No ingredients yet. Click "+ Ingredient" to add.</p>
+                                                        ` : recipe.ingredients.map((ing, idx) => {
                                                             const inventoryCheck = app.checkInventoryForIngredient(ing.name, ing.unit);
                                                             return `
                                                                 <div class="flex items-center gap-2 p-2 hover:bg-gray-50 rounded ${ing.checked ? 'opacity-50' : ''}">
