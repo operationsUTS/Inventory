@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UTS Inventory Manager</title>
+    <title>UTS Inventory & Recipe Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .quantity-dropdown {
@@ -11,6 +11,13 @@
         }
         .quantity-dropdown.active {
             display: grid;
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -48,19 +55,24 @@
             items: [],
             usageHistory: [],
             projectFoods: [],
+            recipeProjects: [],
             selectedCategory: 'All',
             currentView: 'inventory',
+            recipeView: 'active', // 'active', 'archived', 'shopping'
+            selectedProjectId: null,
             isAdmin: false,
             backupCount: 10,
             editingItemId: null,
             compactView: false,
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
+            undoStack: [],
 
             async init() {
                 this.loadCategories();
                 await this.loadData();
                 this.loadUsageHistory();
                 this.loadProjectFoods();
+                this.loadRecipeProjects();
                 this.render();
                 
                 if (!useLocalStorage && supabase) {
@@ -132,11 +144,6 @@
                 this.render();
             },
 
-            toggleCompactView() {
-                this.compactView = !this.compactView;
-                this.render();
-            },
-
             validateData(data) {
                 if (!Array.isArray(data)) return false;
                 for (let item of data) {
@@ -153,9 +160,10 @@
                         items: this.items,
                         usageHistory: this.usageHistory,
                         projectFoods: this.projectFoods,
+                        recipeProjects: this.recipeProjects,
                         categories: this.categories,
                         timestamp: timestamp,
-                        version: '2.1'
+                        version: '3.0'
                     };
                     const backups = this.getBackups();
                     backups.push(backup);
@@ -186,8 +194,9 @@
                         this.items = backup.items;
                         this.usageHistory = backup.usageHistory || [];
                         this.projectFoods = backup.projectFoods || [];
+                        this.recipeProjects = backup.recipeProjects || [];
                         if (backup.categories) this.categories = backup.categories;
-                        this.showNotification('Restored from backup: ' + new Date(backup.timestamp).toLocaleString(), 'success');
+                        this.showNotification('Restored from backup: ' + new Date(backup.timestamp).toLocaleString());
                         return true;
                     }
                 }
@@ -205,7 +214,7 @@
 
             showNotification(message, type = 'success') {
                 const notif = document.createElement('div');
-                notif.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${
+                notif.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 fade-in ${
                     type === 'success' ? 'bg-green-600' : 'bg-red-600'
                 } text-white font-semibold`;
                 notif.textContent = message;
@@ -232,10 +241,7 @@
                 } else {
                     try {
                         const { data, error } = await supabase.from('inventory').select('*').order('name');
-                        if (error) {
-                            console.error('Supabase load error:', error);
-                            throw error;
-                        }
+                        if (error) throw error;
                         if (data) {
                             if (this.validateData(data)) {
                                 this.items = data;
@@ -308,6 +314,345 @@
                 localStorage.setItem('uts-project-foods', JSON.stringify(this.projectFoods));
             },
 
+            loadRecipeProjects() {
+                const saved = localStorage.getItem('uts-recipe-projects');
+                if (saved) {
+                    try {
+                        this.recipeProjects = JSON.parse(saved);
+                    } catch (e) {
+                        this.recipeProjects = [];
+                    }
+                }
+            },
+
+            saveRecipeProjects() {
+                localStorage.setItem('uts-recipe-projects', JSON.stringify(this.recipeProjects));
+                this.createBackup();
+            },
+
+            createNewProject() {
+                const name = prompt('Enter project name (e.g., "Christmas Dinner 2024", "Weekly Meals - Week 1"):');
+                if (!name || !name.trim()) return;
+                
+                const newProject = {
+                    id: Date.now(),
+                    name: name.trim(),
+                    recipes: [],
+                    createdAt: new Date().toISOString(),
+                    archived: false,
+                    notes: ''
+                };
+                
+                this.recipeProjects.push(newProject);
+                this.saveRecipeProjects();
+                this.selectedProjectId = newProject.id;
+                this.showNotification('✓ Project created!');
+                this.render();
+            },
+
+            deleteProject(projectId) {
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+                
+                if (!confirm(`Delete project "${project.name}" and all its recipes?`)) return;
+                
+                this.recipeProjects = this.recipeProjects.filter(p => p.id !== projectId);
+                if (this.selectedProjectId === projectId) {
+                    this.selectedProjectId = null;
+                }
+                this.saveRecipeProjects();
+                this.showNotification('Project deleted');
+                this.render();
+            },
+
+            archiveProject(projectId) {
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+                
+                project.archived = !project.archived;
+                this.saveRecipeProjects();
+                this.showNotification(project.archived ? 'Project archived' : 'Project unarchived');
+                this.render();
+            },
+
+            async parseRecipe(projectId) {
+                const input = document.getElementById('recipeInput').value;
+                const servings = parseInt(document.getElementById('recipeServings').value) || 50;
+
+                if (!input.trim()) {
+                    this.showNotification('Please paste a recipe first!', 'error');
+                    return;
+                }
+
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) {
+                    this.showNotification('Please select a project first!', 'error');
+                    return;
+                }
+
+                document.getElementById('recipeLoadingIndicator').classList.remove('hidden');
+
+                try {
+                    const response = await fetch("https://api.anthropic.com/v1/messages", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            model: "claude-sonnet-4-20250514",
+                            max_tokens: 2000,
+                            messages: [
+                                {
+                                    role: "user",
+                                    content: `Parse this recipe and extract the ingredients as a JSON array. For each ingredient, provide: name (item name), quantity (number), unit (e.g., kg, g, cups, pieces), and category (best guess from: Pasta/Grain, Canned Goods, Dairy, Fresh Veg, Fresh Fruit, Frozen Meat, Frozen Veg, Condiments, Seasoning, Baking, Bread, or Misc).
+
+Recipe for ${servings} servings:
+${input}
+
+Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "recipeName": "name of the dish",
+  "originalServings": number,
+  "ingredients": [
+    {"name": "ingredient name", "quantity": number, "unit": "unit", "category": "category"}
+  ]
+}
+
+DO NOT include any markdown formatting, backticks, or explanatory text. ONLY output the JSON object.`
+                                }
+                            ]
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to parse recipe');
+                    }
+
+                    const data = await response.json();
+                    let responseText = data.content[0].text;
+                    
+                    responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+                    
+                    const parsedRecipe = JSON.parse(responseText);
+
+                    const scaleFactor = servings / parsedRecipe.originalServings;
+                    const scaledIngredients = parsedRecipe.ingredients.map(ing => ({
+                        ...ing,
+                        quantity: Math.round(ing.quantity * scaleFactor * 10) / 10,
+                        checked: false
+                    }));
+
+                    const newRecipe = {
+                        id: Date.now(),
+                        name: parsedRecipe.recipeName,
+                        servings: servings,
+                        originalText: input,
+                        ingredients: scaledIngredients,
+                        createdAt: new Date().toISOString()
+                    };
+
+                    project.recipes.push(newRecipe);
+                    this.saveRecipeProjects();
+                    this.showNotification('✓ Recipe added to project!');
+                    document.getElementById('recipeInput').value = '';
+                    document.getElementById('recipeServings').value = '50';
+
+                } catch (error) {
+                    console.error('Error parsing recipe:', error);
+                    this.showNotification('Error parsing recipe. Please try again.', 'error');
+                } finally {
+                    document.getElementById('recipeLoadingIndicator').classList.add('hidden');
+                    this.render();
+                }
+            },
+
+            deleteRecipe(projectId, recipeId) {
+                if (!confirm('Delete this recipe?')) return;
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+                
+                project.recipes = project.recipes.filter(r => r.id !== recipeId);
+                this.saveRecipeProjects();
+                this.showNotification('Recipe deleted');
+                this.render();
+            },
+
+            toggleRecipeIngredient(projectId, recipeId, ingredientIndex) {
+                const project = this.recipeProjects.find(p => p.id === projectId);
+                if (!project) return;
+                
+                const recipe = project.recipes.find(r => r.id === recipeId);
+                if (!recipe) return;
+                
+                recipe.ingredients[ingredientIndex].checked = !recipe.ingredients[ingredientIndex].checked;
+                this.saveRecipeProjects();
+                this.render();
+            },
+
+            checkInventoryForIngredient(ingredientName, ingredientUnit) {
+                // Find matching item in inventory
+                const match = this.items.find(item => 
+                    item.name.toLowerCase().includes(ingredientName.toLowerCase()) ||
+                    ingredientName.toLowerCase().includes(item.name.toLowerCase())
+                );
+                
+                if (!match) return null;
+                
+                return {
+                    item: match,
+                    inStock: match.quantity > 0
+                };
+            },
+
+            generateConsolidatedShoppingList(projectId = null) {
+                const consolidated = {};
+                
+                let projectsToProcess = projectId 
+                    ? [this.recipeProjects.find(p => p.id === projectId)]
+                    : this.recipeProjects.filter(p => !p.archived);
+                
+                projectsToProcess.forEach(project => {
+                    if (!project) return;
+                    project.recipes.forEach(recipe => {
+                        recipe.ingredients.forEach(ing => {
+                            if (ing.checked) return;
+                            
+                            const key = `${ing.name.toLowerCase()}-${ing.unit}`;
+                            if (consolidated[key]) {
+                                consolidated[key].quantity += ing.quantity;
+                                consolidated[key].recipes.push(`${project.name}: ${recipe.name}`);
+                            } else {
+                                // Check if we have it in inventory
+                                const inventoryCheck = this.checkInventoryForIngredient(ing.name, ing.unit);
+                                
+                                consolidated[key] = {
+                                    name: ing.name,
+                                    quantity: ing.quantity,
+                                    unit: ing.unit,
+                                    category: ing.category,
+                                    recipes: [`${project.name}: ${recipe.name}`],
+                                    inStock: inventoryCheck ? inventoryCheck.inStock : false,
+                                    inventoryItem: inventoryCheck ? inventoryCheck.item : null
+                                };
+                            }
+                        });
+                    });
+                });
+
+                return Object.values(consolidated).sort((a, b) => {
+                    // Sort by: not in stock first, then by category
+                    if (a.inStock !== b.inStock) return a.inStock ? 1 : -1;
+                    return a.category.localeCompare(b.category);
+                });
+            },
+
+            downloadRecipeShoppingList(projectId = null) {
+                const list = this.generateConsolidatedShoppingList(projectId);
+                const rows = [['Item', 'Quantity', 'Unit', 'Category', 'In Stock?', 'Current Stock', 'For Recipes']];
+                
+                list.forEach(item => {
+                    rows.push([
+                        item.name,
+                        item.quantity,
+                        item.unit,
+                        item.category,
+                        item.inStock ? 'YES' : 'NO',
+                        item.inventoryItem ? `${item.inventoryItem.quantity} ${item.inventoryItem.unit}` : 'N/A',
+                        item.recipes.join('; ')
+                    ]);
+                });
+                
+                const csv = rows.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `uts-recipe-shopping-${new Date().toISOString().split('T')[0]}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+                this.showNotification('Shopping list downloaded!');
+            },
+
+            printRecipeShoppingList(projectId = null) {
+                const list = this.generateConsolidatedShoppingList(projectId);
+                const projectName = projectId ? this.recipeProjects.find(p => p.id === projectId)?.name : 'All Active Projects';
+                
+                let printContent = `
+                    <html>
+                    <head>
+                        <title>UTS Shopping List</title>
+                        <style>
+                            body { font-family: Arial, sans-serif; padding: 20px; }
+                            h1 { color: #4f46e5; }
+                            .category { margin-top: 20px; page-break-inside: avoid; }
+                            .category-name { font-weight: bold; font-size: 18px; margin-bottom: 10px; color: #4f46e5; }
+                            .item { margin-left: 20px; padding: 5px 0; display: flex; align-items: start; }
+                            .checkbox { width: 20px; height: 20px; border: 2px solid #333; display: inline-block; margin-right: 10px; flex-shrink: 0; }
+                            .in-stock { color: green; font-weight: bold; }
+                            .need-buy { color: red; font-weight: bold; }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>🍳 Under the Stars - Shopping List</h1>
+                        <h2>${projectName}</h2>
+                        <p>Generated: ${new Date().toLocaleString()}</p>
+                        <p>Total Items: ${list.length} | Need to Buy: ${list.filter(i => !i.inStock).length} | In Stock: ${list.filter(i => i.inStock).length}</p>
+                        <hr>
+                `;
+
+                // Separate items into "Need to Buy" and "In Stock"
+                const needToBuy = list.filter(i => !i.inStock);
+                const inStock = list.filter(i => i.inStock);
+
+                if (needToBuy.length > 0) {
+                    printContent += '<h2 class="need-buy">🛒 NEED TO BUY</h2>';
+                    const byCategory = {};
+                    needToBuy.forEach(item => {
+                        if (!byCategory[item.category]) byCategory[item.category] = [];
+                        byCategory[item.category].push(item);
+                    });
+
+                    Object.keys(byCategory).sort().forEach(category => {
+                        printContent += `<div class="category"><div class="category-name">${category}</div>`;
+                        byCategory[category].forEach(item => {
+                            printContent += `
+                                <div class="item">
+                                    <span class="checkbox"></span>
+                                    <div>
+                                        ${item.quantity} ${item.unit} ${item.name}
+                                        <br><small style="color: #666;">${item.recipes.join('; ')}</small>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        printContent += '</div>';
+                    });
+                }
+
+                if (inStock.length > 0) {
+                    printContent += '<h2 class="in-stock" style="margin-top: 30px;">✓ ALREADY IN STOCK</h2>';
+                    inStock.forEach(item => {
+                        printContent += `
+                            <div class="item">
+                                <span style="color: green; margin-right: 10px;">✓</span>
+                                <div>
+                                    ${item.quantity} ${item.unit} ${item.name}
+                                    <small style="color: green;"> (Have: ${item.inventoryItem.quantity} ${item.inventoryItem.unit})</small>
+                                    <br><small style="color: #666;">${item.recipes.join('; ')}</small>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+
+                printContent += '</body></html>';
+
+                const printWindow = window.open('', '', 'width=800,height=600');
+                printWindow.document.write(printContent);
+                printWindow.document.close();
+                printWindow.print();
+            },
+
             async save() {
                 localStorage.setItem('uts-inventory', JSON.stringify(this.items));
             },
@@ -340,6 +685,12 @@
                 const name = document.getElementById('itemName').value.trim();
                 if (!name) return alert('Please enter item name');
 
+                // Check for duplicates
+                const duplicate = this.items.find(i => i.name.toLowerCase() === name.toLowerCase());
+                if (duplicate && !confirm(`"${name}" already exists in inventory. Add anyway?`)) {
+                    return;
+                }
+
                 const item = {
                     name: name,
                     category: document.getElementById('itemCategory').value,
@@ -362,10 +713,7 @@
                 } else {
                     try {
                         const { data, error } = await supabase.from('inventory').insert([item]).select();
-                        if (error) {
-                            console.error('Insert error:', error);
-                            throw error;
-                        }
+                        if (error) throw error;
                         await this.loadData();
                         this.showNotification('✓ Item added!');
                         this.toggleAddForm();
@@ -420,7 +768,19 @@
                 const item = this.items.find(i => i.id === id);
                 if (!item) return;
 
+                const oldQty = item.quantity;
                 const newQty = Math.max(0, item.quantity + change);
+                
+                // Store undo action
+                this.undoStack.push({
+                    type: 'quantity',
+                    itemId: id,
+                    oldValue: oldQty,
+                    newValue: newQty,
+                    timestamp: Date.now()
+                });
+                if (this.undoStack.length > 10) this.undoStack.shift();
+
                 this.recordUsage(id, item.name, change);
 
                 if (useLocalStorage) {
@@ -647,9 +1007,10 @@
                     items: this.items,
                     usageHistory: this.usageHistory,
                     projectFoods: this.projectFoods,
+                    recipeProjects: this.recipeProjects,
                     categories: this.categories,
                     timestamp: new Date().toISOString(),
-                    version: '2.1'
+                    version: '3.0'
                 };
                 
                 const json = JSON.stringify(backup, null, 2);
@@ -657,10 +1018,10 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `uts-inventory-backup-${new Date().toISOString().split('T')[0]}.json`;
+                a.download = `uts-complete-backup-${new Date().toISOString().split('T')[0]}.json`;
                 a.click();
                 URL.revokeObjectURL(url);
-                this.showNotification('Backup downloaded!');
+                this.showNotification('Complete backup downloaded!');
             },
 
             uploadBackup() {
@@ -677,13 +1038,15 @@
                                 this.items = backup.items;
                                 this.usageHistory = backup.usageHistory || [];
                                 this.projectFoods = backup.projectFoods || [];
+                                this.recipeProjects = backup.recipeProjects || [];
                                 if (backup.categories) this.categories = backup.categories;
                                 this.save();
                                 this.saveUsageHistory();
                                 this.saveProjectFoods();
+                                this.saveRecipeProjects();
                                 this.saveCategories();
                                 this.createBackup();
-                                this.showNotification('Backup restored!');
+                                this.showNotification('Backup restored successfully!');
                                 this.render();
                             } else {
                                 throw new Error('Invalid backup file');
@@ -702,9 +1065,312 @@
                 
                 if (this.currentView === 'admin') {
                     appEl.innerHTML = this.renderAdmin();
+                } else if (this.currentView === 'recipes') {
+                    appEl.innerHTML = this.renderRecipes();
                 } else {
                     appEl.innerHTML = this.renderInventory(showAddForm);
                 }
+            },
+
+            renderRecipes() {
+                const activeProjects = this.recipeProjects.filter(p => !p.archived);
+                const archivedProjects = this.recipeProjects.filter(p => p.archived);
+                
+                const projectsToShow = this.recipeView === 'archived' ? archivedProjects : activeProjects;
+                const selectedProject = this.selectedProjectId ? this.recipeProjects.find(p => p.id === this.selectedProjectId) : null;
+                const shoppingList = this.generateConsolidatedShoppingList(this.selectedProjectId);
+                
+                return `
+                    <div class="min-h-screen p-4">
+                        <div class="max-w-6xl mx-auto">
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local</div>'}
+                            
+                            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                                <div class="flex justify-between items-center mb-4 flex-wrap gap-4">
+                                    <div>
+                                        <h1 class="text-2xl font-bold text-gray-800">🍳 Recipe & Bulk Cook Planner</h1>
+                                        <p class="text-sm text-gray-600">Organize recipes by project • Check inventory • Generate shopping lists</p>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">
+                                            ← Inventory
+                                        </button>
+                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 text-sm">Admin</button>' : ''}
+                                    </div>
+                                </div>
+
+                                <div class="flex gap-2 mb-4">
+                                    <button
+                                        onclick="app.recipeView='active'; app.render();"
+                                        class="flex-1 px-4 py-2 rounded-lg font-semibold ${
+                                            this.recipeView === 'active'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-100 text-gray-700'
+                                        }">
+                                        📁 Active Projects (${activeProjects.length})
+                                    </button>
+                                    <button
+                                        onclick="app.recipeView='archived'; app.render();"
+                                        class="flex-1 px-4 py-2 rounded-lg font-semibold ${
+                                            this.recipeView === 'archived'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-100 text-gray-700'
+                                        }">
+                                        📦 Archived (${archivedProjects.length})
+                                    </button>
+                                    <button
+                                        onclick="app.recipeView='shopping'; app.render();"
+                                        class="flex-1 px-4 py-2 rounded-lg font-semibold ${
+                                            this.recipeView === 'shopping'
+                                                ? 'bg-green-600 text-white'
+                                                : 'bg-gray-100 text-gray-700'
+                                        }">
+                                        🛒 Shopping (${shoppingList.length})
+                                    </button>
+                                </div>
+
+                                ${this.recipeView !== 'shopping' ? `
+                                    <button onclick="app.createNewProject()" class="w-full bg-green-600 text-white px-4 py-3 rounded-lg font-bold hover:bg-green-700">
+                                        + Create New Project
+                                    </button>
+                                ` : ''}
+                            </div>
+
+                            ${this.recipeView === 'shopping' ? `
+                                <div class="bg-white rounded-lg shadow-md p-6">
+                                    <div class="flex justify-between items-center mb-6">
+                                        <div>
+                                            <h2 class="text-xl font-bold">🛒 Shopping List</h2>
+                                            <p class="text-sm text-gray-600">
+                                                ${this.selectedProjectId ? selectedProject?.name : 'All Active Projects'}
+                                            </p>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            ${this.selectedProjectId ? `
+                                                <button
+                                                    onclick="app.selectedProjectId = null; app.render();"
+                                                    class="bg-gray-500 text-white px-3 py-2 rounded-lg hover:bg-gray-600 text-sm"
+                                                >
+                                                    Show All
+                                                </button>
+                                            ` : ''}
+                                            <button
+                                                onclick="app.printRecipeShoppingList(${this.selectedProjectId || 'null'})"
+                                                class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
+                                            >
+                                                🖨️ Print
+                                            </button>
+                                            <button
+                                                onclick="app.downloadRecipeShoppingList(${this.selectedProjectId || 'null'})"
+                                                class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm"
+                                            >
+                                                📥 CSV
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    ${shoppingList.length === 0 ? `
+                                        <p class="text-gray-500 text-center py-8">
+                                            No items needed! All ingredients are checked off or no active projects.
+                                        </p>
+                                    ` : `
+                                        <div class="mb-4 p-4 bg-gray-50 rounded-lg">
+                                            <div class="grid grid-cols-3 gap-4 text-center">
+                                                <div>
+                                                    <div class="text-2xl font-bold text-red-600">${shoppingList.filter(i => !i.inStock).length}</div>
+                                                    <div class="text-xs text-gray-600">Need to Buy</div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-2xl font-bold text-green-600">${shoppingList.filter(i => i.inStock).length}</div>
+                                                    <div class="text-xs text-gray-600">In Stock</div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-2xl font-bold text-blue-600">${shoppingList.length}</div>
+                                                    <div class="text-xs text-gray-600">Total Items</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="space-y-6">
+                                            ${Object.entries(
+                                                shoppingList.reduce((acc, item) => {
+                                                    if (!acc[item.category]) acc[item.category] = [];
+                                                    acc[item.category].push(item);
+                                                    return acc;
+                                                }, {})
+                                            ).map(([category, items]) => `
+                                                <div>
+                                                    <h3 class="font-bold text-lg mb-3 text-indigo-600">${category}</h3>
+                                                    <div class="space-y-2">
+                                                        ${items.map(item => `
+                                                            <div class="flex items-start gap-3 p-3 ${item.inStock ? 'bg-green-50' : 'bg-red-50'} rounded-lg">
+                                                                <div class="flex-1">
+                                                                    <div class="flex items-center gap-2 mb-1">
+                                                                        <span class="font-semibold">
+                                                                            ${item.quantity} ${item.unit} ${item.name}
+                                                                        </span>
+                                                                        ${item.inStock ? `
+                                                                            <span class="text-xs px-2 py-1 bg-green-200 text-green-800 rounded-full font-semibold">
+                                                                                ✓ IN STOCK (${item.inventoryItem.quantity} ${item.inventoryItem.unit})
+                                                                            </span>
+                                                                        ` : `
+                                                                            <span class="text-xs px-2 py-1 bg-red-200 text-red-800 rounded-full font-semibold">
+                                                                                ⚠ NEED TO BUY
+                                                                            </span>
+                                                                        `}
+                                                                    </div>
+                                                                    <div class="text-xs text-gray-600">
+                                                                        For: ${item.recipes.join(' • ')}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        `).join('')}
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    `}
+                                </div>
+                            ` : `
+                                ${projectsToShow.length === 0 ? `
+                                    <div class="bg-white rounded-lg shadow-md p-12 text-center">
+                                        <p class="text-gray-500 mb-4">
+                                            ${this.recipeView === 'archived' ? 'No archived projects yet.' : 'No projects yet. Create one to get started!'}
+                                        </p>
+                                    </div>
+                                ` : projectsToShow.map(project => `
+                                    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                                        <div class="flex justify-between items-start mb-4">
+                                            <div class="flex-1">
+                                                <h3 class="text-xl font-bold text-gray-800">${project.name}</h3>
+                                                <p class="text-sm text-gray-600">
+                                                    ${project.recipes.length} recipes • Created ${new Date(project.createdAt).toLocaleDateString()}
+                                                    ${project.archived ? ' • <span class="text-orange-600 font-semibold">ARCHIVED</span>' : ''}
+                                                </p>
+                                            </div>
+                                            <div class="flex gap-2">
+                                                <button
+                                                    onclick="app.selectedProjectId = ${project.id}; app.recipeView = 'shopping'; app.render();"
+                                                    class="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 text-sm"
+                                                >
+                                                    🛒 Shopping
+                                                </button>
+                                                <button
+                                                    onclick="app.archiveProject(${project.id})"
+                                                    class="bg-orange-500 text-white px-3 py-2 rounded-lg hover:bg-orange-600 text-sm"
+                                                >
+                                                    ${project.archived ? '📂 Unarchive' : '📦 Archive'}
+                                                </button>
+                                                <button
+                                                    onclick="app.deleteProject(${project.id})"
+                                                    class="bg-red-500 text-white px-3 py-2 rounded-lg hover:bg-red-600 text-sm"
+                                                >
+                                                    🗑️
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        ${!project.archived ? `
+                                            <div class="mb-4 border-t pt-4">
+                                                <h4 class="font-semibold mb-3">➕ Add Recipe to Project</h4>
+                                                <div class="space-y-3">
+                                                    <textarea
+                                                        id="recipeInput"
+                                                        placeholder="Paste recipe here...
+
+Example:
+Spaghetti Bolognese (serves 10)
+- 2kg beef mince
+- 1kg spaghetti
+- 800g canned tomatoes
+- 2 onions, diced"
+                                                        class="w-full h-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                                    ></textarea>
+                                                    <div class="flex gap-2">
+                                                        <input
+                                                            type="number"
+                                                            id="recipeServings"
+                                                            value="50"
+                                                            placeholder="Servings"
+                                                            class="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                                                            min="1"
+                                                        />
+                                                        <button
+                                                            onclick="app.parseRecipe(${project.id})"
+                                                            class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold"
+                                                        >
+                                                            ✓ Add Recipe
+                                                        </button>
+                                                    </div>
+                                                    <div id="recipeLoadingIndicator" class="hidden text-center text-indigo-600 font-semibold">
+                                                        ⏳ Processing recipe with AI...
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ` : ''}
+
+                                        <div class="space-y-4">
+                                            ${project.recipes.length === 0 ? `
+                                                <p class="text-gray-500 text-center py-4 text-sm">No recipes in this project yet.</p>
+                                            ` : project.recipes.map(recipe => `
+                                                <div class="border-t pt-4">
+                                                    <div class="flex justify-between items-start mb-3">
+                                                        <div>
+                                                            <h4 class="font-bold text-gray-800">${recipe.name}</h4>
+                                                            <p class="text-xs text-gray-600">${recipe.servings} servings</p>
+                                                        </div>
+                                                        <button
+                                                            onclick="app.deleteRecipe(${project.id}, ${recipe.id})"
+                                                            class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600"
+                                                        >
+                                                            Delete
+                                                        </button>
+                                                    </div>
+                                                    
+                                                    <div class="space-y-1">
+                                                        ${recipe.ingredients.map((ing, idx) => {
+                                                            const inventoryCheck = app.checkInventoryForIngredient(ing.name, ing.unit);
+                                                            return `
+                                                                <div class="flex items-center gap-2 p-2 hover:bg-gray-50 rounded ${ing.checked ? 'opacity-50' : ''}">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        ${ing.checked ? 'checked' : ''}
+                                                                        onchange="app.toggleRecipeIngredient(${project.id}, ${recipe.id}, ${idx})"
+                                                                        class="w-4 h-4 cursor-pointer"
+                                                                    />
+                                                                    <span class="flex-1 text-sm ${ing.checked ? 'line-through text-gray-400' : ''}">
+                                                                        ${ing.quantity} ${ing.unit} ${ing.name}
+                                                                    </span>
+                                                                    ${inventoryCheck && inventoryCheck.inStock ? `
+                                                                        <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">
+                                                                            ✓ In stock (${inventoryCheck.item.quantity} ${inventoryCheck.item.unit})
+                                                                        </span>
+                                                                    ` : `
+                                                                        <span class="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full">
+                                                                            Need to buy
+                                                                        </span>
+                                                                    `}
+                                                                    <span class="text-xs px-2 py-0.5 bg-gray-100 rounded-full">${ing.category}</span>
+                                                                </div>
+                                                            `;
+                                                        }).join('')}
+                                                    </div>
+
+                                                    <details class="mt-2">
+                                                        <summary class="cursor-pointer text-xs text-indigo-600 hover:text-indigo-800">
+                                                            View Original Recipe
+                                                        </summary>
+                                                        <pre class="mt-2 text-xs bg-gray-50 p-3 rounded overflow-x-auto whitespace-pre-wrap">${recipe.originalText}</pre>
+                                                    </details>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            `}
+                        </div>
+                    </div>
+                `;
             },
 
             renderAdmin() {
@@ -740,7 +1406,8 @@
                                 <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
                                     <h1 class="text-2xl font-bold">Admin Dashboard</h1>
                                     <div class="flex gap-2 flex-wrap">
-                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">Back</button>
+                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">Inventory</button>
+                                        <button onclick="app.currentView='recipes'; app.render();" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">Recipes</button>
                                         <button onclick="app.logoutAdmin()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Logout</button>
                                     </div>
                                 </div>
@@ -766,13 +1433,13 @@
 
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                                     <button onclick="app.exportToCSV()" class="bg-green-600 text-white p-3 rounded-lg font-bold hover:bg-green-700 text-sm">
-                                        📊 Export
+                                        📊 Export Inventory
                                     </button>
                                     <button onclick="app.downloadBackup()" class="bg-blue-600 text-white p-3 rounded-lg font-bold hover:bg-blue-700 text-sm">
-                                        💾 Backup
+                                        💾 Download Backup
                                     </button>
                                     <button onclick="app.uploadBackup()" class="bg-orange-600 text-white p-3 rounded-lg font-bold hover:bg-orange-700 text-sm">
-                                        📤 Restore
+                                        📤 Restore Backup
                                     </button>
                                 </div>
                             </div>
@@ -796,7 +1463,7 @@
 
                             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                                 <div class="flex justify-between items-center mb-4 flex-wrap gap-4">
-                                    <h2 class="text-xl font-bold">Shopping List (${shoppingList.length})</h2>
+                                    <h2 class="text-xl font-bold">Inventory Shopping List (${shoppingList.length})</h2>
                                     <div class="flex gap-2">
                                         <button onclick="app.downloadShoppingList()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 text-sm">
                                             📥 CSV
@@ -870,8 +1537,8 @@
                             <div class="bg-white rounded-lg shadow-md p-6">
                                 <h2 class="text-xl font-bold mb-4">Project Food Costs</h2>
                                 <div class="bg-green-50 p-4 rounded-lg mb-4">
-                                    <div class="text-2xl font-bold text-green-600">${totalProjectCosts.toFixed(2)}</div>
-                                    <div class="text-xs text-gray-600">Total</div>
+                                    <div class="text-2xl font-bold text-green-600">$${totalProjectCosts.toFixed(2)}</div>
+                                    <div class="text-xs text-gray-600">Total Project Costs</div>
                                 </div>
                                 
                                 <div class="grid grid-cols-1 gap-3 mb-4">
@@ -881,7 +1548,7 @@
                                     <input type="text" id="projectFoodProject" placeholder="Project name" class="border rounded-lg px-4 py-2 text-sm">
                                 </div>
                                 <button onclick="app.addProjectFood()" class="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700 w-full text-sm">
-                                    Add Cost
+                                    Add Cost Entry
                                 </button>
 
                                 <div class="max-h-96 overflow-y-auto mt-4">
@@ -894,7 +1561,7 @@
                                                         <div class="text-xs text-gray-600">${item.project} • ${new Date(item.date).toLocaleDateString()}</div>
                                                     </div>
                                                     <div class="flex items-center gap-2">
-                                                        <span class="text-green-600 font-bold text-sm">${item.cost.toFixed(2)}</span>
+                                                        <span class="text-green-600 font-bold text-sm">$${item.cost.toFixed(2)}</span>
                                                         <button onclick="app.deleteProjectFood(${item.id})" class="text-red-600 hover:text-red-800 text-xs">Delete</button>
                                                     </div>
                                                 </div>
@@ -911,7 +1578,9 @@
             renderInventory(showAddForm) {
                 const searchTerm = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
                 const filtered = this.items.filter(item => {
-                    const matchesSearch = item.name.toLowerCase().includes(searchTerm);
+                    const matchesSearch = item.name.toLowerCase().includes(searchTerm) || 
+                                         (item.notes && item.notes.toLowerCase().includes(searchTerm)) ||
+                                         (item.location && item.location.toLowerCase().includes(searchTerm));
                     const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
                     return matchesSearch && matchesCategory;
                 }).sort((a, b) => a.name.localeCompare(b.name));
@@ -930,37 +1599,35 @@
                 return `
                     <div class="min-h-screen p-4 pb-20">
                         <div class="max-w-6xl mx-auto">
-                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local</div>'}
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase Connected</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local Storage Mode</div>'}
                             
                             <div class="bg-white rounded-lg shadow-md p-4 mb-4">
                                 <div class="flex items-center justify-between mb-3 flex-wrap gap-3">
-                                    <h1 class="text-2xl font-bold text-gray-800">UTS Inventory</h1>
+                                    <h1 class="text-2xl font-bold text-gray-800">🍽️ UTS Inventory</h1>
                                     <div class="flex gap-2 flex-wrap">
+                                        <button onclick="app.currentView='recipes'; app.render();" class="bg-green-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-green-700 text-xs">🍳 Recipes</button>
                                         ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-purple-700 text-xs">Admin</button>' : ''}
                                         ${!this.isAdmin ? '<button onclick="app.loginAdmin()" class="text-gray-400 hover:text-gray-600 text-xs px-2 py-1">Admin</button>' : ''}
-                                        <button onclick="app.toggleCompactView()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">
-                                            ${this.compactView ? '📋 Normal' : '📊 Compact'}
-                                        </button>
-                                        <button onclick="app.exportData()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">Export</button>
-                                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 text-sm">+ Add</button>
+                                        <button onclick="app.exportToCSV()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">📊 Export</button>
+                                        <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 text-sm">+ Add Item</button>
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                                     <div class="bg-blue-50 p-3 rounded-lg">
                                         <div class="text-xl font-bold text-blue-600">${stats.total}</div>
-                                        <div class="text-xs text-gray-600">Total</div>
+                                        <div class="text-xs text-gray-600">Total Items</div>
                                     </div>
                                     <div class="bg-orange-50 p-3 rounded-lg">
                                         <div class="text-xl font-bold text-orange-600">${stats.lowStock}</div>
-                                        <div class="text-xs text-gray-600">Low</div>
+                                        <div class="text-xs text-gray-600">Low Stock</div>
                                     </div>
                                     <div class="bg-red-50 p-3 rounded-lg">
                                         <div class="text-xl font-bold text-red-600">${stats.outOfStock}</div>
-                                        <div class="text-xs text-gray-600">Out</div>
+                                        <div class="text-xs text-gray-600">Out of Stock</div>
                                     </div>
                                     <div class="bg-yellow-50 p-3 rounded-lg">
                                         <div class="text-xl font-bold text-yellow-600">${stats.expiringSoon}</div>
-                                        <div class="text-xs text-gray-600">Expiring</div>
+                                        <div class="text-xs text-gray-600">Expiring Soon</div>
                                     </div>
                                 </div>
                             </div>
@@ -988,7 +1655,7 @@
                                     </div>
                                     <input type="number" id="itemMinStock" placeholder="Min stock (0 = no alert)" value="0" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                     <input type="date" id="itemExpiry" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                    <input type="text" id="itemLocation" placeholder="Location" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <input type="text" id="itemLocation" placeholder="Location (e.g., Pantry Shelf 2)" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                     <textarea id="itemNotes" placeholder="Notes" class="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows="2"></textarea>
                                 </div>
                                 <button onclick="app.addItem()" class="w-full bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">
@@ -998,7 +1665,7 @@
 
                             <div class="bg-white rounded-lg shadow-md p-4 mb-4 sticky top-0 z-10">
                                 <div class="mb-3">
-                                    <input type="text" id="searchInput" placeholder="🔍 Search..." oninput="app.render()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <input type="text" id="searchInput" placeholder="🔍 Search items, notes, or location..." oninput="app.render()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
                                 <div class="flex gap-2 overflow-x-auto pb-2">
                                     ${this.categories.map(cat => `
@@ -1018,7 +1685,7 @@
                                 ${filtered.length === 0 ? `
                                     <div class="bg-white rounded-lg shadow-md p-12 text-center">
                                         <p class="text-gray-500">
-                                            ${this.items.length === 0 ? 'No items yet. Click "+ Add"!' : 'No matches.'}
+                                            ${this.items.length === 0 ? 'No items yet. Click "+ Add Item"!' : 'No matches found. Try a different search.'}
                                         </p>
                                     </div>
                                 ` : filtered.map(item => {
@@ -1028,7 +1695,7 @@
                                     
                                     if (isEditing) {
                                         return `
-                                            <div id="edit-form-${item.id}" class="bg-blue-50 border-2 border-blue-400 rounded-lg p-4">
+                                            <div id="edit-form-${item.id}" class="bg-blue-50 border-2 border-blue-400 rounded-lg p-4 fade-in">
                                                 <h3 class="text-lg font-bold mb-3">✏️ Editing: ${item.name}</h3>
                                                 <div class="grid grid-cols-1 gap-3 mb-3">
                                                     <input type="text" id="editName-${item.id}" value="${item.name}" class="border rounded-lg px-3 py-2">
@@ -1056,7 +1723,7 @@
                                                 </div>
                                                 <div class="flex gap-2">
                                                     <button onclick="app.updateItem(${item.id})" class="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">
-                                                        ✓ Save
+                                                        ✓ Save Changes
                                                     </button>
                                                     <button onclick="app.cancelEdit()" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-gray-600">
                                                         Cancel
@@ -1067,19 +1734,19 @@
                                     }
                                     
                                     return `
-                                        <div class="${status.color} border-2 rounded-lg p-3">
+                                        <div class="${status.color} border-2 rounded-lg p-3 fade-in">
                                             <div class="flex justify-between items-start mb-2">
                                                 <div class="flex-1">
                                                     <div class="flex items-center gap-2 mb-1 flex-wrap">
                                                         <h3 class="text-lg font-bold text-gray-800">${item.name}</h3>
-                                                        ${isRecent ? '<span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">NEW</span>' : ''}
+                                                        ${isRecent ? '<span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-semibold">UPDATED</span>' : ''}
                                                         <span class="text-xs px-2 py-0.5 bg-gray-200 rounded-full text-gray-600">${item.category}</span>
                                                         ${item.location ? `<span class="text-xs px-2 py-0.5 bg-blue-100 rounded-full text-blue-700">📍 ${item.location}</span>` : ''}
                                                     </div>
                                                     <div class="text-base font-bold ${item.quantity === 0 && (item.minstock || 0) > 0 ? 'text-red-600' : 'text-gray-800'}">
                                                         ${item.quantity} ${item.unit}
                                                     </div>
-                                                    ${item.expirydate ? `<div class="text-xs text-gray-600">Exp: ${new Date(item.expirydate).toLocaleDateString()}</div>` : ''}
+                                                    ${item.expirydate ? `<div class="text-xs text-gray-600">Expires: ${new Date(item.expirydate).toLocaleDateString()}</div>` : ''}
                                                     ${item.notes ? `<div class="text-xs text-gray-600 italic mt-1">📝 ${item.notes}</div>` : ''}
                                                     ${status.text ? `
                                                         <div class="inline-flex items-center gap-1 mt-1 bg-orange-50 px-2 py-1 rounded text-xs font-bold text-orange-700">
@@ -1091,10 +1758,10 @@
                                             
                                             <div class="flex gap-2 mb-2">
                                                 <button onclick="toggleQuantityDropdown(${item.id})" class="flex-1 bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 font-semibold text-sm">
-                                                    ± Adjust Qty
+                                                    ± Adjust Quantity
                                                 </button>
                                                 <button onclick="app.startEditItem(${item.id})" class="bg-blue-500 text-white px-3 py-2 rounded-lg hover:bg-blue-600 font-semibold text-sm">
-                                                    ✏️
+                                                    ✏️ Edit
                                                 </button>
                                                 <button onclick="app.deleteItem(${item.id})" class="bg-red-500 text-white px-3 py-2 rounded-lg hover:bg-red-600 font-semibold text-sm">
                                                     🗑️
@@ -1102,12 +1769,12 @@
                                             </div>
                                             
                                             <div id="qty-${item.id}" class="quantity-dropdown grid-cols-3 gap-2">
-                                                <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-2 py-2 rounded font-bold text-sm">-10</button>
-                                                <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-2 py-2 rounded font-bold text-sm">-5</button>
-                                                <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-2 py-2 rounded font-bold text-sm">-1</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-2 py-2 rounded font-bold text-sm">+1</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-2 py-2 rounded font-bold text-sm">+5</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-2 py-2 rounded font-bold text-sm">+10</button>
+                                                <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-700">-10</button>
+                                                <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-600">-5</button>
+                                                <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-500">-1</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-500">+1</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-600">+5</button>
+                                                <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-700">+10</button>
                                             </div>
                                         </div>
                                     `;
@@ -1116,10 +1783,6 @@
                         </div>
                     </div>
                 `;
-            },
-
-            exportData() {
-                this.exportToCSV();
             }
         };
 
