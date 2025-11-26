@@ -28,13 +28,10 @@
     <script>
         /*
         ============================================
-        SUPABASE SETUP INSTRUCTIONS
+        SUPABASE SETUP FOR CROSS-DEVICE SYNC
         ============================================
         
-        For CROSS-DEVICE SYNC to work, you need to create this table in Supabase:
-        
-        1. Go to Supabase Dashboard → SQL Editor
-        2. Run this SQL:
+        For recipe sync, create this table in Supabase SQL Editor:
         
         CREATE TABLE recipe_projects (
             id BIGINT PRIMARY KEY,
@@ -47,12 +44,7 @@
         
         ALTER TABLE recipe_projects ENABLE ROW LEVEL SECURITY;
         
-        CREATE POLICY "Enable all access for authenticated users" ON recipe_projects
-            FOR ALL USING (true);
-        
-        3. Done! Now recipes will sync across all devices.
-        
-        If you don't create this table, recipes will still work but only save locally (no sync).
+        CREATE POLICY "Enable all access" ON recipe_projects FOR ALL USING (true);
         ============================================
         */
         
@@ -88,12 +80,13 @@
             recipeProjects: [],
             selectedCategory: 'All',
             currentView: 'inventory',
-            recipeView: 'active', // 'active', 'archived', 'shopping'
+            recipeView: 'active',
             selectedProjectId: null,
             isAdmin: false,
             backupCount: 10,
             editingItemId: null,
             compactView: false,
+            filterStatus: null, // 'low', 'out', 'expiring', or null
             categories: ['All', 'Pasta/Grain', 'Canned Goods', 'Disposables', 'Equipment', 'Baking', 'Condiments', 'Stocks/Gravies', 'Seasoning', 'Bread', 'Frozen Meat', 'Prepared Meals', 'Frozen Veg', 'Fresh Fruit', 'Fresh Veg', 'Dairy', 'Baked Goods', 'Giveaways', 'Toiletries', 'Showers', 'Misc'],
             undoStack: [],
 
@@ -103,6 +96,24 @@
                 this.loadUsageHistory();
                 this.loadProjectFoods();
                 this.loadRecipeProjects();
+                
+                // Handle browser back/forward buttons
+                window.addEventListener('popstate', (event) => {
+                    if (event.state) {
+                        this.currentView = event.state.view || 'inventory';
+                        this.recipeView = event.state.recipeView || 'active';
+                        this.selectedProjectId = event.state.selectedProjectId || null;
+                        this.render();
+                    }
+                });
+                
+                // Set initial state
+                history.replaceState({
+                    view: this.currentView,
+                    recipeView: this.recipeView,
+                    selectedProjectId: this.selectedProjectId
+                }, '');
+                
                 this.render();
                 
                 if (!useLocalStorage && supabase) {
@@ -125,6 +136,21 @@
                 
                 setInterval(() => this.autoBackup(), 300000);
                 this.createBackup();
+            },
+
+            navigateTo(view, recipeView = null, projectId = null) {
+                this.currentView = view;
+                if (recipeView) this.recipeView = recipeView;
+                if (projectId !== null) this.selectedProjectId = projectId;
+                
+                // Add to browser history so back button works
+                history.pushState({
+                    view: this.currentView,
+                    recipeView: this.recipeView,
+                    selectedProjectId: this.selectedProjectId
+                }, '');
+                
+                this.render();
             },
 
             loadCategories() {
@@ -546,32 +572,175 @@
             async parseRecipe(projectId) {
                 const input = document.getElementById(`recipeInput-${projectId}`).value;
                 const servings = parseInt(document.getElementById(`recipeServings-${projectId}`).value) || 50;
+                const recipeName = document.getElementById(`recipeName-${projectId}`).value.trim();
 
                 if (!input.trim()) {
-                    this.showNotification('Please paste a recipe first!', 'error');
+                    this.showNotification('Please paste ingredients first!', 'error');
+                    return;
+                }
+
+                if (!recipeName) {
+                    this.showNotification('Please enter a recipe name!', 'error');
                     return;
                 }
 
                 const project = this.recipeProjects.find(p => p.id === projectId);
                 if (!project) {
-                    this.showNotification('Please select a project first!', 'error');
+                    this.showNotification('Project not found!', 'error');
                     return;
                 }
 
-                // Try simple parsing first (look for common patterns)
-                const simpleRecipe = this.simpleRecipeParser(input, servings);
-                if (simpleRecipe && simpleRecipe.ingredients.length > 0) {
-                    project.recipes.push(simpleRecipe);
+                // Parse the recipe
+                const parsedRecipe = this.enhancedRecipeParser(input, servings, recipeName);
+                
+                if (parsedRecipe && parsedRecipe.ingredients.length > 0) {
+                    project.recipes.push(parsedRecipe);
                     this.saveRecipeProjects();
-                    this.showNotification(`✓ Recipe added with ${simpleRecipe.ingredients.length} ingredients!`);
+                    this.showNotification(`✓ Recipe "${recipeName}" added with ${parsedRecipe.ingredients.length} ingredients!`);
+                    
+                    // Clear form
                     document.getElementById(`recipeInput-${projectId}`).value = '';
+                    document.getElementById(`recipeName-${projectId}`).value = '';
                     document.getElementById(`recipeServings-${projectId}`).value = '50';
+                    document.getElementById(`autoparse-${projectId}`).classList.add('hidden');
+                    
                     this.render();
-                    return;
+                } else {
+                    this.showNotification('Could not find any ingredients. Try manual entry instead.', 'error');
+                }
+            },
+
+            enhancedRecipeParser(text, servings, recipeName) {
+                const lines = text.split('\n').filter(line => line.trim());
+                if (lines.length === 0) return null;
+
+                const ingredients = [];
+
+                // Multiple patterns to catch different formats
+                const patterns = [
+                    // "2kg beef", "500g flour", "3 cans tomatoes"
+                    /^\s*[\-\*•]?\s*(\d+\.?\d*)\s*(kg|g|liters?|litres?|ml|L|cans?|tins?|boxes?|packets?|bottles?|cups?|c|tbsp|tsp|tablespoons?|teaspoons?|pieces?|units?|cloves?|slices?|whole)\s+(.+?)$/i,
+                    
+                    // "beef - 2kg", "flour - 500g"
+                    /^\s*[\-\*•]?\s*(.+?)\s*[\-–—]\s*(\d+\.?\d*)\s*(kg|g|liters?|litres?|ml|L|cans?|tins?|boxes?|packets?|bottles?|cups?|c|tbsp|tsp|pieces?|units?|cloves?|slices?).*$/i,
+                    
+                    // "2 kg beef", "500 g flour" (with space)
+                    /^\s*[\-\*•]?\s*(\d+\.?\d*)\s+(?:kg|g|liters?|litres?|ml|L|cans?|tins?|boxes?|packets?|bottles?|cups?|c|tbsp|tsp|pieces?|units?|cloves?|slices?)\s+(.+?)$/i
+                ];
+
+                for (let line of lines) {
+                    line = line.trim();
+                    if (line.length < 2) continue;
+                    
+                    let quantity, unit, name;
+                    let matched = false;
+
+                    // Try each pattern
+                    for (let pattern of patterns) {
+                        const match = line.match(pattern);
+                        if (match) {
+                            if (pattern === patterns[1]) {
+                                // Format: "name - quantity unit"
+                                name = match[1].trim();
+                                quantity = parseFloat(match[2]);
+                                unit = match[3].toLowerCase();
+                            } else {
+                                // Format: "quantity unit name"
+                                quantity = parseFloat(match[1]);
+                                unit = match[2].toLowerCase();
+                                name = match[3] || match[2];
+                                name = name.trim();
+                            }
+                            matched = true;
+                            break;
+                        }
+                    }
+
+                    if (matched && !isNaN(quantity) && name && unit) {
+                        // Clean up the name (remove extra descriptions in parentheses, etc)
+                        name = name.replace(/\([^)]*\)/g, '').trim();
+                        name = name.replace(/,.*/, '').trim();
+                        
+                        // Normalize units
+                        unit = this.normalizeUnit(unit);
+
+                        // Categorize
+                        const category = this.categorizeIngredient(name);
+
+                        ingredients.push({
+                            name: name,
+                            quantity: quantity,
+                            unit: unit,
+                            category: category,
+                            checked: false
+                        });
+                    }
                 }
 
-                // If simple parsing failed, inform user
-                this.showNotification('Could not auto-parse recipe. Please use "Manual Entry" instead.', 'error');
+                if (ingredients.length === 0) return null;
+
+                return {
+                    id: Date.now(),
+                    name: recipeName,
+                    servings: servings,
+                    originalText: text,
+                    ingredients: ingredients,
+                    createdAt: new Date().toISOString()
+                };
+            },
+
+            normalizeUnit(unit) {
+                unit = unit.toLowerCase();
+                if (unit.includes('liter') || unit.includes('litre') || unit === 'l') return 'liters';
+                if (unit.includes('can') || unit.includes('tin')) return 'cans';
+                if (unit === 'piece' || unit === 'pieces') return 'units';
+                if (unit === 'tablespoon' || unit === 'tablespoons') return 'tbsp';
+                if (unit === 'teaspoon' || unit === 'teaspoons') return 'tsp';
+                if (unit === 'clove' || unit === 'cloves') return 'cloves';
+                if (unit === 'slice' || unit === 'slices') return 'slices';
+                if (unit === 'cup' || unit === 'c') return 'cups';
+                if (unit === 'whole') return 'whole';
+                return unit;
+            },
+
+            categorizeIngredient(name) {
+                const nameLower = name.toLowerCase();
+                
+                // Comprehensive categorization
+                if (nameLower.match(/pasta|spaghetti|macaroni|penne|rice|noodle|couscous|quinoa|grain/)) 
+                    return 'Pasta/Grain';
+                
+                if (nameLower.match(/tomato|bean|corn|soup|canned|tinned|chickpea|lentil/)) 
+                    return 'Canned Goods';
+                
+                if (nameLower.match(/milk|cheese|butter|cream|yogurt|yoghurt|sour cream/)) 
+                    return 'Dairy';
+                
+                if (nameLower.match(/potato|onion|carrot|celery|lettuce|cabbage|broccoli|cauliflower|pepper|capsicum|zucchini|courgette|cucumber|tomato|eggplant|aubergine|spinach|kale/)) 
+                    return 'Fresh Veg';
+                
+                if (nameLower.match(/apple|banana|orange|lemon|lime|berry|strawberry|blueberry|melon|grape|pear|peach|mango/)) 
+                    return 'Fresh Fruit';
+                
+                if (nameLower.match(/chicken|beef|pork|lamb|meat|mince|ground|steak|sausage|bacon|ham/)) 
+                    return 'Frozen Meat';
+                
+                if (nameLower.match(/peas|frozen.*veg|mixed.*veg/)) 
+                    return 'Frozen Veg';
+                
+                if (nameLower.match(/salt|pepper|spice|cumin|paprika|oregano|basil|thyme|parsley|coriander|rosemary|garlic|ginger|chili|chilli/)) 
+                    return 'Seasoning';
+                
+                if (nameLower.match(/oil|olive|sauce|vinegar|mayo|mayonnaise|ketchup|mustard|soy|stock|gravy/)) 
+                    return 'Condiments';
+                
+                if (nameLower.match(/flour|sugar|baking|yeast|powder|vanilla/)) 
+                    return 'Baking';
+                
+                if (nameLower.match(/bread|bun|roll|baguette|toast/)) 
+                    return 'Bread';
+                
+                return 'Misc';
             },
 
             simpleRecipeParser(text, servings) {
@@ -994,6 +1163,22 @@
                 this.render();
             },
 
+            setFilter(filter) {
+                if (this.filterStatus === filter) {
+                    this.filterStatus = null; // Toggle off if clicking same filter
+                } else {
+                    this.filterStatus = filter;
+                }
+                this.selectedCategory = 'All'; // Reset category when filtering
+                this.render();
+            },
+
+            clearFilters() {
+                this.filterStatus = null;
+                this.selectedCategory = 'All';
+                this.render();
+            },
+
             async updateQuantity(id, change) {
                 const item = this.items.find(i => i.id === id);
                 if (!item) return;
@@ -1219,8 +1404,7 @@
                 const password = prompt('Enter admin password:');
                 if (password === ADMIN_PASSWORD) {
                     this.isAdmin = true;
-                    this.currentView = 'admin';
-                    this.render();
+                    this.navigateTo('admin');
                 } else if (password !== null) {
                     alert('Incorrect password');
                 }
@@ -1228,8 +1412,7 @@
 
             logoutAdmin() {
                 this.isAdmin = false;
-                this.currentView = 'inventory';
-                this.render();
+                this.navigateTo('inventory');
             },
 
             downloadBackup() {
@@ -1322,16 +1505,16 @@
                                         <p class="text-sm text-gray-600">Organize recipes by project • Check inventory • Generate shopping lists</p>
                                     </div>
                                     <div class="flex gap-2">
-                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">
+                                        <button onclick="app.navigateTo('inventory');" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">
                                             ← Inventory
                                         </button>
-                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 text-sm">Admin</button>' : ''}
+                                        ${this.isAdmin ? '<button onclick="app.navigateTo(\'admin\');" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 text-sm">Admin</button>' : ''}
                                     </div>
                                 </div>
 
                                 <div class="flex gap-2 mb-4">
                                     <button
-                                        onclick="app.recipeView='active'; app.render();"
+                                        onclick="app.navigateTo('recipes', 'active');"
                                         class="flex-1 px-4 py-2 rounded-lg font-semibold ${
                                             this.recipeView === 'active'
                                                 ? 'bg-indigo-600 text-white'
@@ -1340,7 +1523,7 @@
                                         📁 Active Projects (${activeProjects.length})
                                     </button>
                                     <button
-                                        onclick="app.recipeView='archived'; app.render();"
+                                        onclick="app.navigateTo('recipes', 'archived');"
                                         class="flex-1 px-4 py-2 rounded-lg font-semibold ${
                                             this.recipeView === 'archived'
                                                 ? 'bg-indigo-600 text-white'
@@ -1349,7 +1532,7 @@
                                         📦 Archived (${archivedProjects.length})
                                     </button>
                                     <button
-                                        onclick="app.recipeView='shopping'; app.render();"
+                                        onclick="app.navigateTo('recipes', 'shopping');"
                                         class="flex-1 px-4 py-2 rounded-lg font-semibold ${
                                             this.recipeView === 'shopping'
                                                 ? 'bg-green-600 text-white'
@@ -1378,7 +1561,7 @@
                                         <div class="flex gap-2">
                                             ${this.selectedProjectId ? `
                                                 <button
-                                                    onclick="app.selectedProjectId = null; app.render();"
+                                                    onclick="app.navigateTo('recipes', 'shopping', null);"
                                                     class="bg-gray-500 text-white px-3 py-2 rounded-lg hover:bg-gray-600 text-sm"
                                                 >
                                                     Show All
@@ -1480,7 +1663,7 @@
                                             </div>
                                             <div class="flex gap-2">
                                                 <button
-                                                    onclick="app.selectedProjectId = ${project.id}; app.recipeView = 'shopping'; app.render();"
+                                                    onclick="app.navigateTo('recipes', 'shopping', ${project.id});"
                                                     class="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 text-sm"
                                                 >
                                                     🛒 Shopping
@@ -1501,49 +1684,71 @@
                                         </div>
 
                                         ${!project.archived ? `
-                                            <div class="mb-4 border-t pt-4">
-                                                <h4 class="font-semibold mb-3">➕ Add Recipe to Project</h4>
+                                            <div class="mb-4 border-t pt-4 bg-gradient-to-r from-green-50 to-blue-50 rounded-lg p-4">
+                                                <h4 class="font-semibold mb-3 text-lg">➕ Add Recipe</h4>
                                                 
-                                                <div class="bg-blue-50 p-3 rounded-lg mb-3 text-xs">
-                                                    <strong>📝 Auto-Parse:</strong> Paste recipe with format like "2kg beef" or "500g flour"
+                                                <div class="grid md:grid-cols-2 gap-3">
+                                                    <!-- Quick Manual Entry -->
+                                                    <div class="bg-white rounded-lg p-4 border-2 border-green-500">
+                                                        <div class="text-sm font-bold text-green-700 mb-2">✏️ MANUAL ENTRY</div>
+                                                        <p class="text-xs text-gray-600 mb-3">Create recipe, then add ingredients one by one</p>
+                                                        <button onclick="app.addManualRecipe(${project.id})" 
+                                                            class="w-full bg-green-600 text-white px-4 py-3 rounded-lg hover:bg-green-700 font-bold">
+                                                            + New Recipe
+                                                        </button>
+                                                    </div>
+                                                    
+                                                    <!-- Auto Parse -->
+                                                    <div class="bg-white rounded-lg p-4 border-2 border-blue-500">
+                                                        <div class="text-sm font-bold text-blue-700 mb-2">🤖 AUTO-PARSE</div>
+                                                        <p class="text-xs text-gray-600 mb-3">Paste recipe text, extract ingredients automatically</p>
+                                                        <button onclick="document.getElementById('autoparse-${project.id}').classList.toggle('hidden')" 
+                                                            class="w-full bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 font-bold">
+                                                            Paste Recipe
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 
-                                                <div class="space-y-3">
-                                                    <textarea
-                                                        id="recipeInput-${project.id}"
-                                                        placeholder="Paste recipe here with quantities...
-
-Example format:
-Spaghetti Bolognese
-2kg beef mince
-1kg spaghetti
-800g canned tomatoes
-2 onions
-4 cloves garlic"
-                                                        class="w-full h-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                                    ></textarea>
-                                                    <div class="flex gap-2">
+                                                <!-- Auto-parse form (collapsible) -->
+                                                <div id="autoparse-${project.id}" class="hidden mt-3 bg-white rounded-lg p-4 border-2 border-blue-300">
+                                                    <div class="mb-2">
+                                                        <label class="text-sm font-semibold text-gray-700">Recipe Name:</label>
+                                                        <input
+                                                            type="text"
+                                                            id="recipeName-${project.id}"
+                                                            placeholder="e.g., Spaghetti Bolognese"
+                                                            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1"
+                                                        />
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="text-sm font-semibold text-gray-700">Servings:</label>
                                                         <input
                                                             type="number"
                                                             id="recipeServings-${project.id}"
                                                             value="50"
-                                                            placeholder="Servings"
-                                                            class="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                                                            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1"
                                                             min="1"
                                                         />
-                                                        <button
-                                                            onclick="app.parseRecipe(${project.id})"
-                                                            class="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold text-sm"
-                                                        >
-                                                            ✓ Auto-Parse Recipe
-                                                        </button>
-                                                        <button
-                                                            onclick="app.addManualRecipe(${project.id})"
-                                                            class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 font-semibold text-sm whitespace-nowrap"
-                                                        >
-                                                            ➕ Manual Entry
-                                                        </button>
                                                     </div>
+                                                    <div class="mb-3">
+                                                        <label class="text-sm font-semibold text-gray-700">Paste Ingredients:</label>
+                                                        <div class="text-xs text-gray-500 mb-1">Works with: "2kg beef" or "beef - 2kg" or "2 kg beef mince"</div>
+                                                        <textarea
+                                                            id="recipeInput-${project.id}"
+                                                            placeholder="2kg beef mince
+1kg spaghetti  
+3 cans tomatoes
+2 onions
+500g mushrooms"
+                                                            class="w-full h-32 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono"
+                                                        ></textarea>
+                                                    </div>
+                                                    <button
+                                                        onclick="app.parseRecipe(${project.id})"
+                                                        class="w-full bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 font-bold"
+                                                    >
+                                                        🤖 Extract Ingredients
+                                                    </button>
                                                 </div>
                                             </div>
                                         ` : ''}
@@ -1657,8 +1862,8 @@ Spaghetti Bolognese
                                 <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
                                     <h1 class="text-2xl font-bold">Admin Dashboard</h1>
                                     <div class="flex gap-2 flex-wrap">
-                                        <button onclick="app.currentView='inventory'; app.render();" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">Inventory</button>
-                                        <button onclick="app.currentView='recipes'; app.render();" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">Recipes</button>
+                                        <button onclick="app.navigateTo('inventory');" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">Inventory</button>
+                                        <button onclick="app.navigateTo('recipes');" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">Recipes</button>
                                         <button onclick="app.logoutAdmin()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Logout</button>
                                     </div>
                                 </div>
@@ -1828,12 +2033,29 @@ Spaghetti Bolognese
 
             renderInventory(showAddForm) {
                 const searchTerm = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
-                const filtered = this.items.filter(item => {
+                
+                let filtered = this.items.filter(item => {
                     const matchesSearch = item.name.toLowerCase().includes(searchTerm) || 
                                          (item.notes && item.notes.toLowerCase().includes(searchTerm)) ||
                                          (item.location && item.location.toLowerCase().includes(searchTerm));
                     const matchesCategory = this.selectedCategory === 'All' || item.category === this.selectedCategory;
-                    return matchesSearch && matchesCategory;
+                    
+                    // Apply status filter
+                    let matchesStatus = true;
+                    if (this.filterStatus === 'low') {
+                        matchesStatus = (item.minstock || 0) > 0 && item.quantity <= item.minstock && item.quantity > 0;
+                    } else if (this.filterStatus === 'out') {
+                        matchesStatus = (item.minstock || 0) > 0 && item.quantity === 0;
+                    } else if (this.filterStatus === 'expiring') {
+                        if (item.expirydate) {
+                            const days = Math.ceil((new Date(item.expirydate) - new Date()) / (1000 * 60 * 60 * 24));
+                            matchesStatus = days >= 0 && days <= 7;
+                        } else {
+                            matchesStatus = false;
+                        }
+                    }
+                    
+                    return matchesSearch && matchesCategory && matchesStatus;
                 }).sort((a, b) => a.name.localeCompare(b.name));
 
                 const stats = {
@@ -1850,37 +2072,55 @@ Spaghetti Bolognese
                 return `
                     <div class="min-h-screen p-4 pb-20">
                         <div class="max-w-6xl mx-auto">
-                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase Connected</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local Storage Mode</div>'}
+                            ${!useLocalStorage ? '<div class="bg-blue-100 text-blue-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">✓ Supabase Connected - Syncing Across Devices</div>' : '<div class="bg-yellow-100 text-yellow-800 p-2 rounded-lg mb-4 text-xs text-center font-semibold">⚠ Local Storage Mode - No Cross-Device Sync</div>'}
                             
                             <div class="bg-white rounded-lg shadow-md p-4 mb-4">
                                 <div class="flex items-center justify-between mb-3 flex-wrap gap-3">
                                     <h1 class="text-2xl font-bold text-gray-800">🍽️ UTS Inventory</h1>
                                     <div class="flex gap-2 flex-wrap">
-                                        <button onclick="app.currentView='recipes'; app.render();" class="bg-green-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-green-700 text-xs">🍳 Recipes</button>
-                                        ${this.isAdmin ? '<button onclick="app.currentView=\'admin\'; app.render();" class="bg-purple-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-purple-700 text-xs">Admin</button>' : ''}
+                                        <button onclick="app.navigateTo('recipes');" class="bg-green-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-green-700 text-xs">🍳 Recipes</button>
+                                        ${this.isAdmin ? '<button onclick="app.navigateTo(\'admin\');" class="bg-purple-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-purple-700 text-xs">Admin</button>' : ''}
                                         ${!this.isAdmin ? '<button onclick="app.loginAdmin()" class="text-gray-400 hover:text-gray-600 text-xs px-2 py-1">Admin</button>' : ''}
                                         <button onclick="app.exportToCSV()" class="bg-gray-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs">📊 Export</button>
                                         <button onclick="app.toggleAddForm()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 text-sm">+ Add Item</button>
                                     </div>
                                 </div>
-                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                    <div class="bg-blue-50 p-3 rounded-lg">
+                                
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                                    <button onclick="app.clearFilters()" class="bg-blue-50 p-3 rounded-lg hover:bg-blue-100 transition text-left">
                                         <div class="text-xl font-bold text-blue-600">${stats.total}</div>
                                         <div class="text-xs text-gray-600">Total Items</div>
-                                    </div>
-                                    <div class="bg-orange-50 p-3 rounded-lg">
+                                    </button>
+                                    <button onclick="app.setFilter('low')" class="bg-orange-50 p-3 rounded-lg hover:bg-orange-100 transition text-left ${this.filterStatus === 'low' ? 'ring-2 ring-orange-500' : ''}">
                                         <div class="text-xl font-bold text-orange-600">${stats.lowStock}</div>
-                                        <div class="text-xs text-gray-600">Low Stock</div>
-                                    </div>
-                                    <div class="bg-red-50 p-3 rounded-lg">
+                                        <div class="text-xs text-gray-600">Low Stock ${this.filterStatus === 'low' ? '✓' : '(click)'}</div>
+                                    </button>
+                                    <button onclick="app.setFilter('out')" class="bg-red-50 p-3 rounded-lg hover:bg-red-100 transition text-left ${this.filterStatus === 'out' ? 'ring-2 ring-red-500' : ''}">
                                         <div class="text-xl font-bold text-red-600">${stats.outOfStock}</div>
-                                        <div class="text-xs text-gray-600">Out of Stock</div>
-                                    </div>
-                                    <div class="bg-yellow-50 p-3 rounded-lg">
+                                        <div class="text-xs text-gray-600">Out of Stock ${this.filterStatus === 'out' ? '✓' : '(click)'}</div>
+                                    </button>
+                                    <button onclick="app.setFilter('expiring')" class="bg-yellow-50 p-3 rounded-lg hover:bg-yellow-100 transition text-left ${this.filterStatus === 'expiring' ? 'ring-2 ring-yellow-500' : ''}">
                                         <div class="text-xl font-bold text-yellow-600">${stats.expiringSoon}</div>
-                                        <div class="text-xs text-gray-600">Expiring Soon</div>
-                                    </div>
+                                        <div class="text-xs text-gray-600">Expiring Soon ${this.filterStatus === 'expiring' ? '✓' : '(click)'}</div>
+                                    </button>
                                 </div>
+                                
+                                ${this.filterStatus ? `
+                                    <div class="bg-indigo-50 border-l-4 border-indigo-500 p-3 mb-3">
+                                        <div class="flex justify-between items-center">
+                                            <span class="text-sm font-semibold text-indigo-700">
+                                                Showing: ${
+                                                    this.filterStatus === 'low' ? 'Low Stock Items' :
+                                                    this.filterStatus === 'out' ? 'Out of Stock Items' :
+                                                    'Expiring Soon'
+                                                } (${filtered.length})
+                                            </span>
+                                            <button onclick="app.clearFilters()" class="text-xs bg-indigo-600 text-white px-3 py-1 rounded-lg hover:bg-indigo-700">
+                                                Clear Filter
+                                            </button>
+                                        </div>
+                                    </div>
+                                ` : ''}
                             </div>
 
                             <div id="addForm" class="bg-white rounded-lg shadow-md p-4 mb-4 ${showAddForm ? '' : 'hidden'}">
@@ -2007,25 +2247,27 @@ Spaghetti Bolognese
                                                 </div>
                                             </div>
                                             
-                                            <div class="flex gap-2 mb-2">
-                                                <button onclick="toggleQuantityDropdown(${item.id})" class="flex-1 bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 font-semibold text-sm">
-                                                    ± Adjust Quantity
+                                            <div class="flex gap-2 mb-3">
+                                                <button onclick="app.startEditItem(${item.id})" class="flex-1 bg-blue-500 text-white px-4 py-3 rounded-lg hover:bg-blue-600 font-semibold text-sm">
+                                                    ✏️ Edit Details
                                                 </button>
-                                                <button onclick="app.startEditItem(${item.id})" class="bg-blue-500 text-white px-3 py-2 rounded-lg hover:bg-blue-600 font-semibold text-sm">
-                                                    ✏️ Edit
-                                                </button>
-                                                <button onclick="app.deleteItem(${item.id})" class="bg-red-500 text-white px-3 py-2 rounded-lg hover:bg-red-600 font-semibold text-sm">
+                                                <button onclick="app.deleteItem(${item.id})" class="bg-red-500 text-white px-4 py-3 rounded-lg hover:bg-red-600 font-semibold text-sm">
                                                     🗑️
                                                 </button>
                                             </div>
                                             
-                                            <div id="qty-${item.id}" class="quantity-dropdown grid-cols-3 gap-2">
-                                                <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-700">-10</button>
-                                                <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-600">-5</button>
-                                                <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-2 py-2 rounded font-bold text-sm hover:bg-red-500">-1</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-500">+1</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-600">+5</button>
-                                                <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-2 py-2 rounded font-bold text-sm hover:bg-green-700">+10</button>
+                                            <div class="bg-gray-50 rounded-lg p-3">
+                                                <div class="text-xs font-semibold text-gray-600 mb-2">QUICK ADJUST:</div>
+                                                <div class="grid grid-cols-3 gap-2 mb-2">
+                                                    <button onclick="app.updateQuantity(${item.id}, -10)" class="bg-red-600 text-white px-3 py-4 rounded-lg hover:bg-red-700 font-bold text-lg">-10</button>
+                                                    <button onclick="app.updateQuantity(${item.id}, -5)" class="bg-red-500 text-white px-3 py-4 rounded-lg hover:bg-red-600 font-bold text-lg">-5</button>
+                                                    <button onclick="app.updateQuantity(${item.id}, -1)" class="bg-red-400 text-white px-3 py-4 rounded-lg hover:bg-red-500 font-bold text-lg">-1</button>
+                                                </div>
+                                                <div class="grid grid-cols-3 gap-2">
+                                                    <button onclick="app.updateQuantity(${item.id}, 1)" class="bg-green-400 text-white px-3 py-4 rounded-lg hover:bg-green-500 font-bold text-lg">+1</button>
+                                                    <button onclick="app.updateQuantity(${item.id}, 5)" class="bg-green-500 text-white px-3 py-4 rounded-lg hover:bg-green-600 font-bold text-lg">+5</button>
+                                                    <button onclick="app.updateQuantity(${item.id}, 10)" class="bg-green-600 text-white px-3 py-4 rounded-lg hover:bg-green-700 font-bold text-lg">+10</button>
+                                                </div>
                                             </div>
                                         </div>
                                     `;
