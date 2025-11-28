@@ -1019,7 +1019,7 @@
                 this.render();
             },
 
-            checkInventoryForIngredient(ingredientName, ingredientUnit) {
+            checkInventoryForIngredient(ingredientName, ingredientUnit, neededQuantity = 0) {
                 // Find matching item in inventory
                 const match = this.items.find(item => 
                     item.name.toLowerCase().includes(ingredientName.toLowerCase()) ||
@@ -1028,10 +1028,92 @@
                 
                 if (!match) return null;
                 
+                // Convert quantities to same unit for comparison
+                const normalized = this.normalizeQuantities(
+                    match.quantity, match.unit,
+                    neededQuantity, ingredientUnit
+                );
+                
+                if (!normalized) {
+                    // Units don't match - just return basic info
+                    return {
+                        item: match,
+                        inStock: match.quantity > 0,
+                        enoughStock: false,
+                        unitMismatch: true,
+                        message: `Have ${match.quantity} ${match.unit}, need ${neededQuantity} ${ingredientUnit} (different units)`
+                    };
+                }
+                
+                const hasEnough = normalized.stockQuantity >= normalized.neededQuantity;
+                const shortage = hasEnough ? 0 : normalized.neededQuantity - normalized.stockQuantity;
+                
                 return {
                     item: match,
-                    inStock: match.quantity > 0
+                    inStock: match.quantity > 0,
+                    enoughStock: hasEnough,
+                    stockQuantity: normalized.stockQuantity,
+                    neededQuantity: normalized.neededQuantity,
+                    shortage: shortage,
+                    unit: normalized.unit,
+                    message: hasEnough 
+                        ? `✓ Have ${match.quantity} ${match.unit}` 
+                        : `⚠ Have ${match.quantity} ${match.unit}, need ${shortage.toFixed(1)} ${normalized.unit} more`
                 };
+            },
+
+            normalizeQuantities(stockQty, stockUnit, neededQty, neededUnit) {
+                // Normalize units to compare
+                stockUnit = stockUnit.toLowerCase();
+                neededUnit = neededUnit.toLowerCase();
+                
+                // Weight conversions
+                const weightUnits = {
+                    'g': 1,
+                    'kg': 1000,
+                    'grams': 1,
+                    'kilograms': 1000
+                };
+                
+                // Volume conversions
+                const volumeUnits = {
+                    'ml': 1,
+                    'liters': 1000,
+                    'litres': 1000,
+                    'l': 1000,
+                    'cups': 250,
+                    'cup': 250
+                };
+                
+                // Check if both are weight units
+                if (weightUnits[stockUnit] && weightUnits[neededUnit]) {
+                    return {
+                        stockQuantity: stockQty * weightUnits[stockUnit],
+                        neededQuantity: neededQty * weightUnits[neededUnit],
+                        unit: 'g'
+                    };
+                }
+                
+                // Check if both are volume units
+                if (volumeUnits[stockUnit] && volumeUnits[neededUnit]) {
+                    return {
+                        stockQuantity: stockQty * volumeUnits[stockUnit],
+                        neededQuantity: neededQty * volumeUnits[neededUnit],
+                        unit: 'ml'
+                    };
+                }
+                
+                // If units are exactly the same (like cans, boxes, etc)
+                if (stockUnit === neededUnit) {
+                    return {
+                        stockQuantity: stockQty,
+                        neededQuantity: neededQty,
+                        unit: stockUnit
+                    };
+                }
+                
+                // Units don't match - can't compare
+                return null;
             },
 
             generateConsolidatedShoppingList(projectId = null) {
@@ -1051,9 +1133,13 @@
                             if (consolidated[key]) {
                                 consolidated[key].quantity += ing.quantity;
                                 consolidated[key].recipes.push(`${project.name}: ${recipe.name}`);
+                                // Re-check inventory with updated quantity
+                                const inventoryCheck = this.checkInventoryForIngredient(ing.name, ing.unit, consolidated[key].quantity);
+                                consolidated[key].inStock = inventoryCheck ? inventoryCheck.enoughStock : false;
+                                consolidated[key].inventoryCheck = inventoryCheck;
                             } else {
-                                // Check if we have it in inventory
-                                const inventoryCheck = this.checkInventoryForIngredient(ing.name, ing.unit);
+                                // Check if we have enough in inventory
+                                const inventoryCheck = this.checkInventoryForIngredient(ing.name, ing.unit, ing.quantity);
                                 
                                 consolidated[key] = {
                                     name: ing.name,
@@ -1061,8 +1147,9 @@
                                     unit: ing.unit,
                                     category: ing.category,
                                     recipes: [`${project.name}: ${recipe.name}`],
-                                    inStock: inventoryCheck ? inventoryCheck.inStock : false,
-                                    inventoryItem: inventoryCheck ? inventoryCheck.item : null
+                                    inStock: inventoryCheck ? inventoryCheck.enoughStock : false,
+                                    inventoryItem: inventoryCheck ? inventoryCheck.item : null,
+                                    inventoryCheck: inventoryCheck
                                 };
                             }
                         });
@@ -1747,19 +1834,23 @@
                                                     <h3 class="font-bold text-lg mb-3 text-indigo-600">${category}</h3>
                                                     <div class="space-y-2">
                                                         ${items.map(item => `
-                                                            <div class="flex items-start gap-3 p-3 ${item.inStock ? 'bg-green-50' : 'bg-red-50'} rounded-lg">
+                                                            <div class="flex items-start gap-3 p-3 ${item.inStock ? 'bg-green-50' : 'bg-orange-50'} rounded-lg">
                                                                 <div class="flex-1">
                                                                     <div class="flex items-center gap-2 mb-1">
                                                                         <span class="font-semibold">
                                                                             ${item.quantity} ${item.unit} ${item.name}
                                                                         </span>
-                                                                        ${item.inStock ? `
+                                                                        ${item.inStock && item.inventoryCheck ? `
                                                                             <span class="text-xs px-2 py-1 bg-green-200 text-green-800 rounded-full font-semibold">
-                                                                                ✓ IN STOCK (${item.inventoryItem.quantity} ${item.inventoryItem.unit})
+                                                                                ✓ ${item.inventoryCheck.message}
+                                                                            </span>
+                                                                        ` : item.inventoryCheck && item.inventoryCheck.inStock && !item.inventoryCheck.enoughStock ? `
+                                                                            <span class="text-xs px-2 py-1 bg-orange-200 text-orange-800 rounded-full font-semibold">
+                                                                                ⚠ ${item.inventoryCheck.message}
                                                                             </span>
                                                                         ` : `
                                                                             <span class="text-xs px-2 py-1 bg-red-200 text-red-800 rounded-full font-semibold">
-                                                                                ⚠ NEED TO BUY
+                                                                                ⚠ NEED TO BUY ${item.quantity} ${item.unit}
                                                                             </span>
                                                                         `}
                                                                     </div>
@@ -1942,7 +2033,7 @@
                                                         ${recipe.ingredients.length === 0 ? `
                                                             <p class="text-gray-500 text-sm italic py-2">No ingredients yet. Click "+ Ingredient" to add.</p>
                                                         ` : recipe.ingredients.map((ing, idx) => {
-                                                            const inventoryCheck = app.checkInventoryForIngredient(ing.name, ing.unit);
+                                                            const inventoryCheck = app.checkInventoryForIngredient(ing.name, ing.unit, ing.quantity);
                                                             return `
                                                                 <div class="flex items-center gap-2 p-2 hover:bg-gray-50 rounded ${ing.checked ? 'opacity-50' : ''}">
                                                                     <input
@@ -1954,13 +2045,17 @@
                                                                     <span class="flex-1 text-sm ${ing.checked ? 'line-through text-gray-400' : ''}">
                                                                         ${ing.quantity} ${ing.unit} ${ing.name}
                                                                     </span>
-                                                                    ${inventoryCheck && inventoryCheck.inStock ? `
-                                                                        <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">
-                                                                            ✓ In stock (${inventoryCheck.item.quantity} ${inventoryCheck.item.unit})
+                                                                    ${inventoryCheck && inventoryCheck.enoughStock ? `
+                                                                        <span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full font-semibold">
+                                                                            ✓ ${inventoryCheck.message}
+                                                                        </span>
+                                                                    ` : inventoryCheck && inventoryCheck.inStock && !inventoryCheck.enoughStock ? `
+                                                                        <span class="text-xs px-2 py-1 bg-orange-100 text-orange-700 rounded-full font-semibold" title="${inventoryCheck.message}">
+                                                                            ⚠ Need ${inventoryCheck.shortage.toFixed(1)} ${inventoryCheck.unit} more
                                                                         </span>
                                                                     ` : `
-                                                                        <span class="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full">
-                                                                            Need to buy
+                                                                        <span class="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-full font-semibold">
+                                                                            ⚠ Need to buy
                                                                         </span>
                                                                     `}
                                                                     <span class="text-xs px-2 py-0.5 bg-gray-100 rounded-full">${ing.category}</span>
